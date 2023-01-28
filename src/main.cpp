@@ -8,6 +8,10 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+
+
 
 #define DHTPIN  5
 #define DHTTYPE DHT11 
@@ -24,6 +28,7 @@ const char* password = "102696++pan"; //配置WiFi密码
 
 WiFiClient client;
 HTTPClient http;
+AsyncWebServer server(80);
 
 //静态iP信息
 IPAddress staticIP(192, 168, 0, 253);
@@ -39,6 +44,9 @@ DynamicJsonDocument weather_doc(1024);
 float temprature;//温度
 float humidity;//湿度
 float pressure;//大气压
+
+bool data_flag=false;
+bool display_flag=false;
 
 String time_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
 String date_data;//日期json数据
@@ -70,9 +78,24 @@ typedef struct{//日期时间结构体
 
 }DATE;
 
+typedef struct{
+  uint16_t CPU_Utilization;
+  uint16_t Memory_Utilization;
+  uint16_t GPU_Utilization;
+  uint16_t Mother_board_Temp;
+  uint16_t CPU_Temp;
+  uint16_t GPU_Temp;
+  uint16_t GPU_Fan;
+  uint16_t CPU_Fan;
+  
+}COMPUTE_DATA;
+
+
+
 
 WEATHER weather[2];
 DATE date;
+COMPUTE_DATA compute_data;
 
 //无阻塞延时的暂存时间变量
 unsigned long previousMillis_sensor = 0;
@@ -80,6 +103,7 @@ unsigned long previousMillis_time = 0;
 unsigned long previousMillis_colon = 0;
 unsigned long previousMillis_weather = 0;
 unsigned long previousMillis_refresh_monitor= 0;
+unsigned long previousMillis_switch_display= 0;
 
 static const unsigned char PROGMEM temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
 static const unsigned char PROGMEM humidity_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
@@ -97,6 +121,9 @@ void get_weather();
 void set_mode(bool mode);
 void digital_tube_display();
 void display();
+void data_display();
+void notFound(AsyncWebServerRequest *request);
+void get_compute_data(AsyncWebServerRequest *request);
 
 void setup() {
   pinMode(BACKGRPUND_LIGHT,OUTPUT);
@@ -136,8 +163,12 @@ void setup() {
   http.setTimeout(500);
   http.begin(client,time_url);
 
-  get_date();//获取一次日期时间为下面的模式选择铺垫
+  server.on("/",HTTP_GET,get_compute_data);
+  server.onNotFound(notFound);
+  server.begin();
 
+
+  get_date();//获取一次日期时间为下面的模式选择铺垫
 }
 void loop() {
   if(0<=date.hour.toInt()&&date.hour.toInt()<=5)//休眠
@@ -167,9 +198,23 @@ void loop() {
       previousMillis_colon = currentMillis;
       digital_tube_display();
     }
+    else if((data_flag)&&(currentMillis - previousMillis_switch_display >= 5000)){//数码管刷新
+      previousMillis_switch_display = currentMillis;
+
+      display_flag=!display_flag;
+      data_flag=false;
+    }
     else if (currentMillis - previousMillis_refresh_monitor >= 300) {//屏幕刷新
       previousMillis_refresh_monitor = currentMillis;
-      display();
+
+      if(display_flag)
+      {
+          data_display(); 
+      }
+      else
+      {
+          display();
+      }
     }
   }
 }
@@ -356,3 +401,59 @@ void display()//屏幕显示
   u8g2.setFont(u8g2_font_minicute_tr);
 }
 
+void data_display()
+{
+  u8g2.clearBuffer();
+  u8g2.drawStr(0,0,("CPU TEMP--------"+String(compute_data.CPU_Temp)).c_str());
+  u8g2.drawXBMP(100,0,8,8,temperature_bmp);
+  u8g2.drawStr(0,8,("GPU TEMP--------"+String(compute_data.GPU_Temp)).c_str());
+  u8g2.drawXBMP(100,8,8,8,temperature_bmp);
+  u8g2.drawStr(0,16,("BOARD-----------"+String(compute_data.Mother_board_Temp)).c_str());
+  u8g2.drawXBMP(100,16,8,8,temperature_bmp);
+  u8g2.drawStr(0,24,("CPU USE---------"+String(compute_data.CPU_Utilization)).c_str());
+  u8g2.drawXBMP(100,24,8,8,humidity_bmp);
+  u8g2.drawStr(0,32,("GPU USE---------"+String(compute_data.GPU_Utilization)).c_str());
+  u8g2.drawXBMP(100,32,8,8,humidity_bmp);
+  u8g2.drawStr(0,40,("MEMORY USE-----"+String(compute_data.Memory_Utilization)).c_str());
+  u8g2.drawXBMP(100,40,8,8,humidity_bmp);
+  u8g2.drawStr(0,48,("CPU FNA---------"+String(compute_data.CPU_Fan)+"RPM").c_str());
+  u8g2.drawStr(0,56,("GPU FAN---------"+String(compute_data.GPU_Fan)+"RPM").c_str());
+  u8g2.sendBuffer();
+  
+}
+
+void notFound(AsyncWebServerRequest *request) {
+    request->send(404, "text/plain", "Not found");
+}
+
+void get_compute_data(AsyncWebServerRequest *request) {
+  if(request!=nullptr)
+  {
+    uint8_t paramNumber=request->params();
+    AsyncWebParameter* param;
+    String param_name;
+    uint16_t param_value;
+    for(int i=0;i<paramNumber;i++)
+    {
+      param = request->getParam(i);
+      if(param!=nullptr)
+      {
+        param_name=param->name();
+        param_value=param->value().toInt();
+
+        if(param_name.equals("CPUUtilization"))compute_data.CPU_Utilization=param_value;
+        else if(param_name.equals("MemoryUtilization"))compute_data.Memory_Utilization=param_value;
+        else if(param_name.equals("GPUUtilization"))compute_data.GPU_Utilization=param_value;
+        else if(param_name.equals("Motherboard"))compute_data.Mother_board_Temp=param_value;
+        else if(param_name.equals("CPU"))compute_data.CPU_Fan=param_value;
+        else if(param_name.equals("CPUDiode"))compute_data.CPU_Temp=param_value;
+        else if(param_name.equals("GPU"))compute_data.GPU_Fan=param_value;
+        else if(param_name.equals("GPUDiode"))compute_data.GPU_Temp=param_value;
+      }
+    }
+    data_flag=true;
+    request->send(200, "text/plain", "success!");
+  }
+  
+  
+}
