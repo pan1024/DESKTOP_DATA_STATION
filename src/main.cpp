@@ -7,10 +7,9 @@
 #include <SPI.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
-
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-
+#include <DNSServer.h>
 #include <ArduinoJson.h>
 #include <little_fs_esp8266/little_fs.h>
 
@@ -24,11 +23,11 @@ Adafruit_BMP280 bmp(BMP_CS);//气压计模块
 TM1637 tm1637(0, 16);//数码管模块
 U8G2_ST7567_JLX12864_F_4W_HW_SPI u8g2(U8G2_MIRROR, /* cs=*/ 1, /* dc=*/ 3, /* reset=*/ 2);//屏幕模块
 
-WiFiClient client;
+WiFiClient wifi_client;
 HTTPClient time_http_client;
 HTTPClient weather_http_client;
 
-AsyncWebServer web_server(80);
+AsyncWebServer server(80);
 
 String ip_address;//连接后获得的IP地址
 
@@ -41,9 +40,70 @@ bool display_mode_flag=false;//显示数据类型的标志
 bool weather_switch_flag=true;
 
 String time_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
-
-
 String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city=340321&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
+
+String home_page =R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=0">
+	<title>WIFI_SETTING</title>
+	<style>
+		.div1{
+			position: absolute;
+			 top: 30%;
+			 left: 50%;
+			 transform: translate(-50%,-50%);
+			 
+			  display: table-cell;
+			 /*垂直居中 */
+			 vertical-align: middle;
+			 /*水平居中*/
+			 text-align: center;
+		}
+		.submit_div{
+			background-color: blue;
+			color: white;
+			border-radius: 8px;
+			 width: 300px;
+			 height: 35px;
+		}
+		.input_div
+		{
+			border: 1px solid #0000FF;
+			border-radius: 20px;
+			width: 300px;
+			height: 35px;
+			font-size: 20px;
+		}
+	</style>
+</head>
+<body>
+	<div class="div1">
+		<h1>信息设置</h1>
+		<form name="wifiset" onsubmit="return validateForm()" action="\setConfig" method="post" target="myframe">
+			<label for="wifiName">WiFi账号</label>
+			<br />
+			<input name="wifiName" type="text" placeholder="WIFI账号" class="input_div">
+			<br />
+			<label for="wifiPassward">WiFi密码</label>
+			<br />
+			<input name="wifiPassword" type="password" placeholder="WIFI密码" class="input_div">
+			<br />
+			<label for="">休眠时间设置</label>
+			<br />
+			<input name="startSleepTime" type="text" placeholder="开始休眠时间" class="input_div">
+			<br />
+			<input name="endSleepTime" type="text" placeholder="停止休眠时间" class="input_div">
+			<br /><br />
+			<input type='submit' value='确认' class="submit_div">
+		</form>
+	</div>
+</body>
+<script type="text/javascript">
+</script>
+)rawliteral";
 
 typedef struct{//天气数据结构体
   String text_day;
@@ -75,10 +135,17 @@ typedef struct{//电脑数据结构体
   
 }COMPUTE_DATA;
 
+typedef struct{
+  String wifi_name;
+  String wifi_password;
+  uint8_t start_sleep_time;
+  uint8_t end_sleep_time;
+}CONFIG;
 
 WEATHER weather[2];
 DATE date;
 COMPUTE_DATA compute_data;
+CONFIG device_config;
 
 //无阻塞延时的暂存时间变量
 unsigned long previousMillis_sensor = 0;
@@ -105,56 +172,59 @@ void set_mode(bool mode);
 void digital_tube_display();
 void sensor_data_display();
 void compute_data_display();
+void create_ap();
+uint8_t wifi_connect(String wifi_name,String wifi_password);
+void sever_start();
+void dns_server_start();
+void write_config_txt(String wifi_name,String wifi_password,uint8_t start_sleep_time,uint8_t end_sleep_time);
+String read_config_txt();
+CONFIG get_config(String config_str);
 void notFound(AsyncWebServerRequest *request);
 void get_compute_data(AsyncWebServerRequest *request);
-
+void set_config(AsyncWebServerRequest *request);
 
 void setup(){
   device_init();
- 
 
-  IPAddress staticIP(192, 168, 0, 253);
-  IPAddress gateway(192, 168, 0, 1);
-  IPAddress subnet(255, 255, 255, 0);
-  IPAddress dns(192, 168, 0,1);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.config(staticIP, gateway, subnet, dns, dns);
-  WiFi.begin(String("see you again_1").c_str(), String("102696++pan").c_str());
-
-  digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
-  while (WiFi.status()!=WL_CONNECTED)
+  if(String("nullptr").equals(read_config_txt()))//读取不到配置文件
   {
-      delay(500);
-      u8g2.clearBuffer();
-      u8g2.drawStr(0,0,"WIFI CONNECTING.......");
-      u8g2.sendBuffer();
+      create_ap();//开启热点
+      sever_start();//开启服务器
+      dns_server_start();//开启dns服务器
   }
-  ip_address=WiFi.localIP().toString();
+  else//读取到配置文件
+  {
+    device_config=get_config(read_config_txt());//获取配置信息
+    uint8_t flag=wifi_connect(device_config.wifi_name,device_config.wifi_password);//连接wifi
+    if(flag!=WL_CONNECTED)//判断连接状态
+    {
+      deleteFile("/config.txt");
+      ESP.restart();
+    }
 
-  web_server.onNotFound(notFound);
-  web_server.on("/uploadComputeData",HTTP_GET,get_compute_data);
-  web_server.begin();
+    ip_address=WiFi.localIP().toString();//ip地址
 
-  time_http_client.setTimeout(1000);
-  time_http_client.begin(client,time_url);
+    digitalWrite(BACKGRPUND_LIGHT,LOW);
 
-  weather_http_client.setTimeout(1000);
-  weather_http_client.begin(client,weather_url);
+    sever_start();//开启服务器
 
-  get_date();//获取一次日期时间为下面的模式选择铺垫
-}
+    time_http_client.setTimeout(1000);
+    time_http_client.begin(wifi_client,time_url);
+    weather_http_client.setTimeout(1000);
+    weather_http_client.begin(wifi_client,weather_url);
+
+    get_date();//获取一次日期时间为下面的模式选择铺垫
+  }
   
-void loop()
-{
-  if(6<=date.hour.toInt()&&date.hour.toInt()<=7)//休眠
+}
+void loop() {
+  if(device_config.start_sleep_time<=date.hour.toInt()&&date.hour.toInt()<=device_config.end_sleep_time)//休眠
   { 
     set_mode(false);//休眠模式
     get_date();
     delay(5000);
   }
-  else
-  {//正常工作
+  else{//正常工作
     unsigned long currentMillis = millis();
 
     set_mode(true);//工作模式
@@ -183,8 +253,7 @@ void loop()
 
       compute_data_flag=false;//清除受到电脑数据的标志
     }
-    else if (currentMillis - previousMillis_refresh_monitor >= 300)
-    {//屏幕刷新
+    else if (currentMillis - previousMillis_refresh_monitor >= 300) {//屏幕刷新
       previousMillis_refresh_monitor = currentMillis;
 
       if(display_mode_flag)
@@ -193,11 +262,10 @@ void loop()
       }
       else
       {
-         sensor_data_display();//传感器数据展示
+          sensor_data_display();//传感器数据展示
       }
     }
   }
-
 }
 
 void u8g2_prepare()
@@ -225,44 +293,59 @@ void device_init()
   tm1637.setBrightness(5);
   u8g2_prepare();
   u8g2.begin();
-
+  LittleFS.begin();
 }
 
 String weekDay(int year,uint8_t month,uint8_t day){//通过年月日计算星期
-      uint8_t week;
-      String weekday="";
-      year=year%100;
-      if(month>=3)
-      {
-          week=year+(year/4)-35+(26*(month+1)/10)+day-1;
-      }
-      else
-      {
-          month=month+12;
-          year=year-1;
-          week=year+(year/4)-35+(26*(month+1)/10)+day-1;
-      }
-      switch(week%7)
-      {
-          case 0:weekday="Sunday" ;break;
-          case 1:weekday="Monday" ;break;
-          case 2:weekday="Tuesday" ;break;
-          case 3:weekday="Wednesday" ;break;
-          case 4:weekday="Thursday" ;break;
-          case 5:weekday="Friday" ;break;
-          case 6:weekday="Saturday" ;break;
-      }
-      return weekday;
+  uint8_t week;
+  String weekday="";
+  year=year%100;
+  if(month>=3)
+  {
+      week=year+(year/4)-35+(26*(month+1)/10)+day-1;
+  }
+  else
+  {
+      month=month+12;
+      year=year-1;
+      week=year+(year/4)-35+(26*(month+1)/10)+day-1;
+  }
+  switch(week%7)
+  {
+      case 0:weekday="Sunday" ;break;
+      case 1:weekday="Monday" ;break;
+      case 2:weekday="Tuesday" ;break;
+      case 3:weekday="Wednesday" ;break;
+      case 4:weekday="Thursday" ;break;
+      case 5:weekday="Friday" ;break;
+      case 6:weekday="Saturday" ;break;
+  }
+  return weekday;
+}
+
+WEATHER weather_data_parse(String weather_data,int i)//天气json数据解析
+  {
+    DynamicJsonDocument weather_doc(1024);
+    deserializeJson(weather_doc, weather_data);//反序列化json
+    JsonObject obj = weather_doc.as<JsonObject>();
+    WEATHER weather;
+    JsonObject obj_temp=obj["forecasts"][0]["casts"][i];
+    weather.text_day=obj_temp["dayweather"].as<String>();
+    weather.text_night=obj_temp["nightweather"].as<String>();
+    weather.high=obj_temp["daytemp"].as<String>();
+    weather.low=obj_temp["nighttemp"].as<String>();
+    weather.wind_speed=obj_temp["daypower"].as<String>();
+    return weather;
   }
 
 void get_sensor_data()
 {
   sensors_event_t event;
-  dht.temperature().getEvent(&event);
-  if (!(isnan(event.temperature)))  temprature=event.temperature;
-  dht.humidity().getEvent(&event);
-  if (!(isnan(event.relative_humidity))) humidity=event.relative_humidity;
-  if (bmp.takeForcedMeasurement()) pressure=bmp.readPressure();
+      dht.temperature().getEvent(&event);
+      if (!(isnan(event.temperature)))  temprature=event.temperature;
+      dht.humidity().getEvent(&event);
+      if (!(isnan(event.relative_humidity))) humidity=event.relative_humidity;
+      if (bmp.takeForcedMeasurement()) pressure=bmp.readPressure();
 }    
 
 void get_date(){//日期时间获取
@@ -270,7 +353,6 @@ void get_date(){//日期时间获取
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
     //"sysTime2":"2021-12-07 21:07:31","sysTime1":"2021 12 07 210731"}
     DynamicJsonDocument date_doc(1024);
-    String date_data;//日期json数据
     deserializeJson(date_doc, time_http_client.getString());//反序列化json
     JsonObject obj = date_doc.as<JsonObject>();
     String temp=obj["sysTime1"]+"";
@@ -285,7 +367,7 @@ void get_date(){//日期时间获取
 
 void get_weather()//天气数据获取
 {
-  uint8_t httpCode = weather_http_client.GET();
+ uint8_t httpCode = weather_http_client.GET();
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
     //"sysTime2":"2021-12-07 21:07:31","sysTime1":"2021 12 07 210731"}
     DynamicJsonDocument weather_doc(1024);
@@ -293,23 +375,7 @@ void get_weather()//天气数据获取
     weather[0]=weather_data_parse(weather_data,0);     
     weather[1]=weather_data_parse(weather_data,1);
   }
-
-
- }
-
-WEATHER weather_data_parse(String weather_data,int i)//天气json数据解析
-  {
-    DynamicJsonDocument weather_doc(1024);
-    deserializeJson(weather_doc, weather_data);//反序列化json
-    JsonObject obj = weather_doc.as<JsonObject>();
-    WEATHER weather;
-    weather.text_day=obj["forecasts"][0]["casts"][i]["dayweather"].as<String>();//obj["results"][0]["daily"][i]["text_day"].as<String>();
-    weather.text_night=obj["forecasts"][0]["casts"][i]["nightweather"].as<String>();//obj["results"][0]["daily"][i]["text_night"].as<String>();
-    weather.high=obj["forecasts"][0]["casts"][i]["daytemp"].as<String>();
-    weather.low=obj["forecasts"][0]["casts"][i]["nighttemp"].as<String>();
-    weather.wind_speed=obj["forecasts"][0]["casts"][i]["daypower"].as<String>();
-    return weather;
-  }
+}
 
 void set_mode(bool mode)
 {
@@ -434,7 +500,7 @@ void compute_data_display()//电脑数据显示
 
 void notFound(AsyncWebServerRequest *request)
 {
-  request->send(200, "text/html", "not found");
+  request->send(200, "text/html", home_page);
 }
 
 void get_compute_data(AsyncWebServerRequest *request) {
@@ -463,8 +529,124 @@ void get_compute_data(AsyncWebServerRequest *request) {
       }
     }
     compute_data_flag=true;
-   request->send(200, "text/plain", "success!");
+   // request->send(200, "text/plain", "success!");
   }
   
 }
 
+void set_config(AsyncWebServerRequest *request)//配置信息网页
+{
+    if(request->hasParam("wifiName",true)){
+      AsyncWebParameter* wifi_name_param = request->getParam("wifiName",true);					    
+      AsyncWebParameter* wifi_password_param = request->getParam("wifiPassword",true);	
+      AsyncWebParameter* start_sleep_time_param = request->getParam("startSleepTime",true);		
+      AsyncWebParameter* end_sleep_time_param = request->getParam("endSleepTime",true);		
+      String wifi_name_str= wifi_name_param->value();
+      String wifi_password_str= wifi_password_param->value();
+      uint8_t start_sleep_time_int=start_sleep_time_param->value().toInt();
+      uint8_t end_sleep_time_int=end_sleep_time_param->value().toInt();
+
+      write_config_txt(wifi_name_str,wifi_password_str,start_sleep_time_int,end_sleep_time_int);//wifi连接成功,写入配置文件
+
+      ESP.restart();//重启esp
+    } 
+}
+
+void create_ap()//创建热点
+{
+  IPAddress apIP(8,8,4,4);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP("DESKTOP_DATA_STATION");
+} 
+
+uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
+{
+  //静态iP信息
+  IPAddress staticIP(192, 168, 0, 253);
+  IPAddress gateway(192, 168, 0, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  IPAddress dns(192, 168, 0,1);
+
+  WiFi.disconnect(false,true);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.config(staticIP, gateway, subnet, dns, dns);
+  WiFi.begin(wifi_name.c_str(), wifi_password.c_str());
+  uint8_t disconnected=0;
+
+  digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
+  while (true)
+  {
+      ESP.wdtFeed();//feed watch door dog
+      delay(500);
+      uint8_t flag=WiFi.status();
+      switch (flag)
+      {
+        case WL_DISCONNECTED:++disconnected;break;
+        case WL_WRONG_PASSWORD:return WL_WRONG_PASSWORD;break;//密码错误
+        case WL_NO_SSID_AVAIL:return WL_NO_SSID_AVAIL;break;//没有该WIFI
+        case WL_CONNECTED:return WL_CONNECTED;break;
+      }
+      if(disconnected>=10)return WL_DISCONNECTED;//5秒后依旧未连接
+      u8g2.clearBuffer();
+      u8g2.drawStr(0,0,"WIFI CONNECTING.......");
+      u8g2.sendBuffer();
+  }
+ 
+}
+
+void sever_start()//开启服务器
+{
+    server.onNotFound(notFound);
+    server.on("/uploadComputeData",HTTP_GET,get_compute_data);
+    server.on("/setConfig",HTTP_POST,set_config);
+    server.begin();
+}
+
+void dns_server_start()//开启dns服务器
+{
+    IPAddress apIP(8,8,4,4);
+    const byte DNS_PORT = 53;
+    DNSServer dnsServer;
+    dnsServer.start(DNS_PORT, "*", apIP);
+    while (true) dnsServer.processNextRequest();
+}
+
+void write_config_txt(String wifi_name,String wifi_password,uint8_t start_sleep_time,uint8_t end_sleep_time)//写入配置信息到config.txt
+{ 
+  String config_str=read_config_txt();
+  if(String("nullptr").equals(config_str))//找不到文件
+  {
+      DynamicJsonDocument doc(1024);
+      doc["wifi_name"] = wifi_name;
+      doc["wifi_password"]= wifi_password;
+      doc["start_sleep_time"]=start_sleep_time;
+      doc["end_sleep_time"]=end_sleep_time;
+      String data;
+      serializeJson(doc, data);
+      writeFile("/config.txt", data.c_str());//创建一个新的文件并写入
+  }
+}
+
+String read_config_txt()//读取配置信息
+{
+    return readFile("/config.txt");
+}
+
+CONFIG get_config(String config_str)//解析配置信息返回配置结构体
+{
+  DynamicJsonDocument doc(1024);
+  deserializeJson(doc, config_str);
+  String wifi_name=doc["wifi_name"];
+  String wifi_password=doc["wifi_password"];
+  uint8_t start_sleep_time=doc["start_sleep_time"];
+  uint8_t end_sleep_time=doc["end_sleep_time"];
+
+  CONFIG result;
+  result.wifi_name=wifi_name;
+  result.wifi_password=wifi_password;
+  result.start_sleep_time=start_sleep_time;
+  result.end_sleep_time=end_sleep_time;
+  return result;
+}
