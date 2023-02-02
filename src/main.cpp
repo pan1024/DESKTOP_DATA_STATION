@@ -39,8 +39,9 @@ bool compute_data_flag=false;//获取计算机信息的标志
 bool display_mode_flag=false;//显示数据类型的标志
 bool weather_switch_flag=true;
 
+String city_code;
 String time_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
-String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city=340321&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
+
 
 String home_page =R"rawliteral(
 <!DOCTYPE html>
@@ -77,25 +78,34 @@ String home_page =R"rawliteral(
 			height: 35px;
 			font-size: 20px;
 		}
+		.input_div_2
+		{
+			border: 1px solid #0000FF;
+			border-radius: 20px;
+			width: 145px;
+			height: 35px;
+			font-size: 20px;
+		}
 	</style>
 </head>
 <body>
 	<div class="div1">
 		<h1>信息设置</h1>
-		<form name="wifiset" onsubmit="return validateForm()" action="\setConfig" method="post" target="myframe">
-			<label for="wifiName">WiFi账号</label>
+		<form name="wifiset" onsubmit="return validateForm()" action="/setConfig" method="post" target="myframe">
+			<label for="">WiFi信息设置</label>
 			<br />
 			<input name="wifiName" type="text" placeholder="WIFI账号" class="input_div">
 			<br />
-			<label for="wifiPassward">WiFi密码</label>
-			<br />
 			<input name="wifiPassword" type="password" placeholder="WIFI密码" class="input_div">
-			<br />
+			<br /><br />
 			<label for="">休眠时间设置</label>
 			<br />
-			<input name="startSleepTime" type="text" placeholder="开始休眠时间" class="input_div">
+			<input name="startSleepTime" type="text" placeholder="开始休眠时间" class="input_div_2">
+			<input name="endSleepTime" type="text" placeholder="停止休眠时间" class="input_div_2">
+			<br /><br />
+			<label for="">天气设置</label>
 			<br />
-			<input name="endSleepTime" type="text" placeholder="停止休眠时间" class="input_div">
+			<input name="cityCode" type="text" placeholder="城市代码(身份证前6位)" class="input_div">
 			<br /><br />
 			<input type='submit' value='确认' class="submit_div">
 		</form>
@@ -140,6 +150,7 @@ typedef struct{
   String wifi_password;
   uint8_t start_sleep_time;
   uint8_t end_sleep_time;
+  String  city_code;
 }CONFIG;
 
 WEATHER weather[2];
@@ -176,7 +187,7 @@ void create_ap();
 uint8_t wifi_connect(String wifi_name,String wifi_password);
 void sever_start();
 void dns_server_start();
-void write_config_txt(String wifi_name,String wifi_password,uint8_t start_sleep_time,uint8_t end_sleep_time);
+void write_config_txt(CONFIG config);
 String read_config_txt();
 CONFIG get_config(String config_str);
 void notFound(AsyncWebServerRequest *request);
@@ -185,6 +196,9 @@ void set_config(AsyncWebServerRequest *request);
 
 void setup(){
   device_init();
+  // LittleFS.begin();
+  // Serial.begin(115200);
+  // Serial.println(read_config_txt());
 
   if(String("nullptr").equals(read_config_txt()))//读取不到配置文件
   {
@@ -199,9 +213,12 @@ void setup(){
     if(flag!=WL_CONNECTED)//判断连接状态
     {
       deleteFile("/config.txt");
+      digitalWrite(BACKGRPUND_LIGHT,LOW);
       ESP.restart();
     }
 
+    city_code=device_config.city_code;
+    String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+city_code+"&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
     ip_address=WiFi.localIP().toString();//ip地址
 
     digitalWrite(BACKGRPUND_LIGHT,LOW);
@@ -541,13 +558,29 @@ void set_config(AsyncWebServerRequest *request)//配置信息网页
       AsyncWebParameter* wifi_password_param = request->getParam("wifiPassword",true);	
       AsyncWebParameter* start_sleep_time_param = request->getParam("startSleepTime",true);		
       AsyncWebParameter* end_sleep_time_param = request->getParam("endSleepTime",true);		
+      AsyncWebParameter* city_code_param = request->getParam("cityCode",true);		
       String wifi_name_str= wifi_name_param->value();
       String wifi_password_str= wifi_password_param->value();
-      uint8_t start_sleep_time_int=start_sleep_time_param->value().toInt();
-      uint8_t end_sleep_time_int=end_sleep_time_param->value().toInt();
+      String start_sleep_time_str=start_sleep_time_param->value();
+      String end_sleep_time_str=end_sleep_time_param->value();
+      String city_code_str=city_code_param->value();
 
-      write_config_txt(wifi_name_str,wifi_password_str,start_sleep_time_int,end_sleep_time_int);//wifi连接成功,写入配置文件
-
+      String before_config_str=read_config_txt();
+      CONFIG before_config=get_config(before_config_str);
+      CONFIG temp;
+      if(wifi_name_str.equals(""))temp.wifi_name=before_config.wifi_name;
+      else temp.wifi_name=wifi_name_str;
+      if(wifi_password_str.equals(""))temp.wifi_password=before_config.wifi_password;
+      else temp.wifi_password=wifi_password_str;
+      if(start_sleep_time_str.equals(""))temp.start_sleep_time=before_config.start_sleep_time;
+      else temp.start_sleep_time=start_sleep_time_str.toInt();
+      if(end_sleep_time_str.equals(""))temp.end_sleep_time=before_config.end_sleep_time;
+      else temp.end_sleep_time=end_sleep_time_str.toInt();
+      if(city_code_str.equals(""))temp.city_code=before_config.city_code;
+      else temp.city_code=city_code_str;
+      
+      write_config_txt(temp);//wifi连接成功,写入配置文件
+      request->send(200, "text/plain", "success!");
       ESP.restart();//重启esp
     } 
 }
@@ -574,20 +607,14 @@ uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
   WiFi.config(staticIP, gateway, subnet, dns, dns);
   WiFi.begin(wifi_name.c_str(), wifi_password.c_str());
   uint8_t disconnected=0;
-
   digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
   while (true)
   {
       ESP.wdtFeed();//feed watch door dog
       delay(500);
       uint8_t flag=WiFi.status();
-      switch (flag)
-      {
-        case WL_DISCONNECTED:++disconnected;break;
-        case WL_WRONG_PASSWORD:return WL_WRONG_PASSWORD;break;//密码错误
-        case WL_NO_SSID_AVAIL:return WL_NO_SSID_AVAIL;break;//没有该WIFI
-        case WL_CONNECTED:return WL_CONNECTED;break;
-      }
+      if(flag!=WL_CONNECTED)++disconnected;
+      if(flag==WL_CONNECTED)return WL_CONNECTED;
       if(disconnected>=10)return WL_DISCONNECTED;//5秒后依旧未连接
       u8g2.clearBuffer();
       u8g2.drawStr(0,0,"WIFI CONNECTING.......");
@@ -613,20 +640,17 @@ void dns_server_start()//开启dns服务器
     while (true) dnsServer.processNextRequest();
 }
 
-void write_config_txt(String wifi_name,String wifi_password,uint8_t start_sleep_time,uint8_t end_sleep_time)//写入配置信息到config.txt
+void write_config_txt(CONFIG config)//写入配置信息到config.txt
 { 
-  String config_str=read_config_txt();
-  if(String("nullptr").equals(config_str))//找不到文件
-  {
-      DynamicJsonDocument doc(1024);
-      doc["wifi_name"] = wifi_name;
-      doc["wifi_password"]= wifi_password;
-      doc["start_sleep_time"]=start_sleep_time;
-      doc["end_sleep_time"]=end_sleep_time;
-      String data;
-      serializeJson(doc, data);
-      writeFile("/config.txt", data.c_str());//创建一个新的文件并写入
-  }
+    DynamicJsonDocument doc(1024);
+    doc["wifi_name"] = config.wifi_name;
+    doc["wifi_password"]= config.wifi_password;
+    doc["start_sleep_time"]=config.start_sleep_time;
+    doc["end_sleep_time"]=config.end_sleep_time;
+    doc["city_code"]=config.city_code;
+    String data;
+    serializeJson(doc, data);
+    writeFile("/config.txt", data.c_str());//创建一个新的文件并写入
 }
 
 String read_config_txt()//读取配置信息
@@ -642,11 +666,12 @@ CONFIG get_config(String config_str)//解析配置信息返回配置结构体
   String wifi_password=doc["wifi_password"];
   uint8_t start_sleep_time=doc["start_sleep_time"];
   uint8_t end_sleep_time=doc["end_sleep_time"];
-
+  String city_code=doc["city_code"];
   CONFIG result;
   result.wifi_name=wifi_name;
   result.wifi_password=wifi_password;
   result.start_sleep_time=start_sleep_time;
   result.end_sleep_time=end_sleep_time;
+  result.city_code=city_code;
   return result;
 }
