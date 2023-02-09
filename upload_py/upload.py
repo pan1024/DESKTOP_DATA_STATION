@@ -30,9 +30,12 @@ def set_params():
 
 
 if __name__ == "__main__":
-        while True:
-            try:
-                result = requests.get(url="http://192.168.0.253/uploadComputeData", params=set_params())
-                time.sleep(2)
-            except:
-                pass
+    while True:
+        try:
+            result = requests.post(url="http://192.168.0.253/uploadComputeData", data=set_params())
+            while result.status_code == 200:
+                result = requests.post(url="http://192.168.0.253/uploadComputeData", data=set_params())
+                time.sleep(1)
+        except:
+            pass
+

@@ -39,9 +39,6 @@ bool compute_data_flag=false;//获取计算机信息的标志
 bool display_mode_flag=false;//显示数据类型的标志
 bool weather_switch_flag=true;
 
-String city_code;
-String time_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
-
 
 String home_page =R"rawliteral(
 <!DOCTYPE html>
@@ -124,12 +121,12 @@ typedef struct{//天气数据结构体
 }WEATHER;
 
 typedef struct{//日期时间结构体
-  String year;
-  String month;
-  String day;
-  String hour="9999";
-  String minte;
-  String second;
+  String year="9999";
+  String month="99";
+  String day="99";
+  String hour="99";
+  String minte="99";
+  String second="99";
 
 }DATE;
 
@@ -145,7 +142,7 @@ typedef struct{//电脑数据结构体
   
 }COMPUTE_DATA;
 
-typedef struct{
+typedef struct{//配置信息结构体
   String wifi_name;
   String wifi_password;
   uint8_t start_sleep_time;
@@ -169,8 +166,6 @@ unsigned long previousMillis_switch_display= 0;
 static const unsigned char PROGMEM temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
 static const unsigned char PROGMEM humidity_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
 static const unsigned char PROGMEM pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
-
-uint8_t line_ordinate=0;//动态框横坐标
 
 void u8g2_prepare();
 void device_init();
@@ -200,7 +195,8 @@ void setup(){
   // Serial.begin(115200);
   // Serial.println(read_config_txt());
 
-  if(String("nullptr").equals(read_config_txt()))//读取不到配置文件
+  String config_str=read_config_txt();
+  if(String("nullptr").equals(config_str))//读取不到配置文件
   {
       create_ap();//开启热点
       sever_start();//开启服务器
@@ -208,23 +204,23 @@ void setup(){
   }
   else//读取到配置文件
   {
-    device_config=get_config(read_config_txt());//获取配置信息
+    device_config=get_config(config_str);//获取配置信息
     uint8_t flag=wifi_connect(device_config.wifi_name,device_config.wifi_password);//连接wifi
-    if(flag!=WL_CONNECTED)//判断连接状态
+    if(flag!=WL_CONNECTED)//连接失败
     {
       deleteFile("/config.txt");
-      digitalWrite(BACKGRPUND_LIGHT,LOW);
+      digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光
       ESP.restart();
     }
-
-    city_code=device_config.city_code;
-    String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+city_code+"&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
+    digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光
+    
     ip_address=WiFi.localIP().toString();//ip地址
-
-    digitalWrite(BACKGRPUND_LIGHT,LOW);
 
     sever_start();//开启服务器
 
+    String time_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
+    String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+device_config.city_code+"&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
+    
     time_http_client.setTimeout(1000);
     time_http_client.begin(wifi_client,time_url);
     weather_http_client.setTimeout(1000);
@@ -368,17 +364,20 @@ void get_sensor_data()
 void get_date(){//日期时间获取
   uint8_t httpCode = time_http_client.GET();
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
-    //"sysTime2":"2021-12-07 21:07:31","sysTime1":"2021 12 07 210731"}
+    //{"sysTime2":"2021-12-07 21:07:31","sysTime1":"20211207210731"}
     DynamicJsonDocument date_doc(1024);
     deserializeJson(date_doc, time_http_client.getString());//反序列化json
     JsonObject obj = date_doc.as<JsonObject>();
-    String temp=obj["sysTime1"]+"";
-    date.year=temp.substring(0,4);
-    date.month=temp.substring(4,6);
-    date.day=temp.substring(6,8);
-    date.hour=temp.substring(8,10);
-    date.minte=temp.substring(10,12);
-    date.second=temp.substring(12,14);
+    String date_str=obj["sysTime1"]+"";
+    if(!date_str.equals("null"))
+    {
+      date.year=date_str.substring(0,4);
+      date.month=date_str.substring(4,6);
+      date.day=date_str.substring(6,8);
+      date.hour=date_str.substring(8,10);
+      date.minte=date_str.substring(10,12);
+      date.second=date_str.substring(12,14);
+    }
   }
 }
 
@@ -448,6 +447,7 @@ void sensor_data_display()//传感器数据显示
   u8g2.drawLine(0,21,63,21);
   u8g2.drawLine(0,50,63,50);
   //设置上下动态边框
+  static uint8_t line_ordinate=0;//动态框横坐标
   u8g2.drawLine(0,63,line_ordinate,63);
   u8g2.drawLine(127-line_ordinate,63,127,63);
   u8g2.drawLine(0,0,line_ordinate,0);
@@ -489,7 +489,6 @@ void sensor_data_display()//传感器数据显示
   u8g2.drawUTF8(65,26,("夜:"+temp_weather.text_night).c_str());
   u8g2.drawUTF8(65,38,String("温度:"+temp_weather.low+".."+temp_weather.high).c_str());
   u8g2.drawUTF8(65,50,("风速:"+temp_weather.wind_speed+"级").c_str());
-  //
   u8g2.sendBuffer();
   u8g2.setFont(u8g2_font_minicute_tr);
 }
@@ -520,69 +519,83 @@ void notFound(AsyncWebServerRequest *request)
   request->send(200, "text/html", home_page);
 }
 
-void get_compute_data(AsyncWebServerRequest *request) {
-  if(request!=nullptr)
+void get_compute_data(AsyncWebServerRequest *request)//电脑数据传输
+{
+  if(request->hasParam("CPUUtilization",true))
   {
     uint8_t paramNumber=request->params();
+
     AsyncWebParameter* param;
     String param_name;
     uint16_t param_value;
+
     for(int i=0;i<paramNumber;i++)
     {
       param = request->getParam(i);
-      if(param!=nullptr)
-      {
-        param_name=param->name();
-        param_value=param->value().toInt();
-
-        if(param_name.equals("CPUUtilization"))compute_data.CPU_Utilization=param_value;
-        else if(param_name.equals("MemoryUtilization"))compute_data.Memory_Utilization=param_value;
-        else if(param_name.equals("GPUUtilization"))compute_data.GPU_Utilization=param_value;
-        else if(param_name.equals("Motherboard"))compute_data.Mother_board_Temp=param_value;
-        else if(param_name.equals("CPU"))compute_data.CPU_Fan=param_value;
-        else if(param_name.equals("CPUDiode"))compute_data.CPU_Temp=param_value;
-        else if(param_name.equals("GPU"))compute_data.GPU_Fan=param_value;
-        else if(param_name.equals("GPUDiode"))compute_data.GPU_Temp=param_value;
-      }
+      param_name=param->name();
+      param_value=param->value().toInt();
+      
+      if(param_name.equals("CPUUtilization"))compute_data.CPU_Utilization=param_value;
+      else if(param_name.equals("MemoryUtilization"))compute_data.Memory_Utilization=param_value;
+      else if(param_name.equals("GPUUtilization"))compute_data.GPU_Utilization=param_value;
+      else if(param_name.equals("Motherboard"))compute_data.Mother_board_Temp=param_value;
+      else if(param_name.equals("CPU"))compute_data.CPU_Fan=param_value;
+      else if(param_name.equals("CPUDiode"))compute_data.CPU_Temp=param_value;
+      else if(param_name.equals("GPU"))compute_data.GPU_Fan=param_value;
+      else if(param_name.equals("GPUDiode"))compute_data.GPU_Temp=param_value;
+      
     }
     compute_data_flag=true;
-   // request->send(200, "text/plain", "success!");
+    
+    request->send(200, "text/plain", "success!");
   }
-  
 }
 
 void set_config(AsyncWebServerRequest *request)//配置信息网页
 {
-    if(request->hasParam("wifiName",true)){
-      AsyncWebParameter* wifi_name_param = request->getParam("wifiName",true);					    
-      AsyncWebParameter* wifi_password_param = request->getParam("wifiPassword",true);	
-      AsyncWebParameter* start_sleep_time_param = request->getParam("startSleepTime",true);		
-      AsyncWebParameter* end_sleep_time_param = request->getParam("endSleepTime",true);		
-      AsyncWebParameter* city_code_param = request->getParam("cityCode",true);		
-      String wifi_name_str= wifi_name_param->value();
-      String wifi_password_str= wifi_password_param->value();
-      String start_sleep_time_str=start_sleep_time_param->value();
-      String end_sleep_time_str=end_sleep_time_param->value();
-      String city_code_str=city_code_param->value();
+  if(request->hasParam("wifiName",true)){
+    uint8_t param_number=request->params();
+    AsyncWebParameter* param;
+    String param_name;
+    String param_value;
 
-      String before_config_str=read_config_txt();
-      CONFIG before_config=get_config(before_config_str);
-      CONFIG temp;
-      if(wifi_name_str.equals(""))temp.wifi_name=before_config.wifi_name;
-      else temp.wifi_name=wifi_name_str;
-      if(wifi_password_str.equals(""))temp.wifi_password=before_config.wifi_password;
-      else temp.wifi_password=wifi_password_str;
-      if(start_sleep_time_str.equals(""))temp.start_sleep_time=before_config.start_sleep_time;
-      else temp.start_sleep_time=start_sleep_time_str.toInt();
-      if(end_sleep_time_str.equals(""))temp.end_sleep_time=before_config.end_sleep_time;
-      else temp.end_sleep_time=end_sleep_time_str.toInt();
-      if(city_code_str.equals(""))temp.city_code=before_config.city_code;
-      else temp.city_code=city_code_str;
+    String wifi_name_str;
+    String wifi_password_str;
+    String start_sleep_time_str;
+    String end_sleep_time_str;
+    String city_code_str;
+
+    for(int i=0;i<param_number;i++)
+    {
+      param=request->getParam(i);
+      param_name=param->name();
+      param_value=param->value();
       
-      write_config_txt(temp);//wifi连接成功,写入配置文件
-      request->send(200, "text/plain", "success!");
-      ESP.restart();//重启esp
-    } 
+      if(param_name.equals("wifiName"))wifi_name_str=param_value;
+      else if(param_name.equals("wifiPassword"))wifi_password_str=param_value;
+      else if(param_name.equals("startSleepTime"))start_sleep_time_str=param_value;
+      else if(param_name.equals("endSleepTime"))end_sleep_time_str=param_value;
+      else if(param_name.equals("cityCode"))city_code_str=param_value;
+    }
+  
+    CONFIG before_config=get_config(read_config_txt());//之前的配置
+
+    CONFIG new_config;
+    if(wifi_name_str.equals(""))new_config.wifi_name=before_config.wifi_name;
+    else new_config.wifi_name=wifi_name_str;
+    if(wifi_password_str.equals(""))new_config.wifi_password=before_config.wifi_password;
+    else new_config.wifi_password=wifi_password_str;
+    if(start_sleep_time_str.equals(""))new_config.start_sleep_time=before_config.start_sleep_time;
+    else new_config.start_sleep_time=start_sleep_time_str.toInt();
+    if(end_sleep_time_str.equals(""))new_config.end_sleep_time=before_config.end_sleep_time;
+    else new_config.end_sleep_time=end_sleep_time_str.toInt();
+    if(city_code_str.equals(""))new_config.city_code=before_config.city_code;
+    else new_config.city_code=city_code_str;
+    
+    write_config_txt(new_config);//wifi连接成功,写入配置文件
+    request->send(200, "text/plain", "success!");
+    ESP.restart();//重启esp
+  } 
 }
 
 void create_ap()//创建热点
@@ -626,7 +639,7 @@ uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
 void sever_start()//开启服务器
 {
     server.onNotFound(notFound);
-    server.on("/uploadComputeData",HTTP_GET,get_compute_data);
+    server.on("/uploadComputeData",HTTP_POST,get_compute_data);
     server.on("/setConfig",HTTP_POST,set_config);
     server.begin();
 }
@@ -637,6 +650,10 @@ void dns_server_start()//开启dns服务器
     const byte DNS_PORT = 53;
     DNSServer dnsServer;
     dnsServer.start(DNS_PORT, "*", apIP);
+    digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
+    u8g2.clearBuffer();
+    u8g2.drawStr(0,0,"WAIT CONFIGING.......");
+    u8g2.sendBuffer();
     while (true) dnsServer.processNextRequest();
 }
 
