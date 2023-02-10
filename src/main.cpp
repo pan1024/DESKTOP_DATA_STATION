@@ -37,7 +37,7 @@ float pressure;//大气压
 
 bool compute_data_flag=false;//获取计算机信息的标志
 bool display_mode_flag=false;//显示数据类型的标志
-bool weather_switch_flag=true;
+bool weather_switch_flag=true;//转换今天和明天的天气标志
 
 
 String home_page =R"rawliteral(
@@ -127,6 +127,7 @@ typedef struct{//日期时间结构体
   String hour="99";
   String minte="99";
   String second="99";
+  String week="unknow";
 
 }DATE;
 
@@ -259,23 +260,27 @@ void loop() {
       previousMillis_colon = currentMillis;
       digital_tube_display();
     }
-    else if((compute_data_flag)&&(currentMillis - previousMillis_switch_display >= 5000)){
+    else if(currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
       previousMillis_switch_display = currentMillis;
-
-      display_mode_flag=!display_mode_flag;//每五秒钟切换一次显示模式（传感器数据或电脑数据
-
-      compute_data_flag=false;//清除受到电脑数据的标志
+      if(compute_data_flag)
+      {
+        display_mode_flag=!display_mode_flag;
+        compute_data_flag=false;
+      }
+      else{
+          display_mode_flag=false;
+      }
     }
     else if (currentMillis - previousMillis_refresh_monitor >= 300) {//屏幕刷新
       previousMillis_refresh_monitor = currentMillis;
-
+       
       if(display_mode_flag)
       {
-          compute_data_display();//电脑数据展示 
+        compute_data_display();//电脑数据展示 
       }
       else
       {
-          sensor_data_display();//传感器数据展示
+        sensor_data_display();//传感器数据展示
       }
     }
   }
@@ -377,6 +382,7 @@ void get_date(){//日期时间获取
       date.hour=date_str.substring(8,10);
       date.minte=date_str.substring(10,12);
       date.second=date_str.substring(12,14);
+      date.week=weekDay(date.year.toInt(),date.month.toInt(),date.day.toInt());
     }
   }
 }
@@ -393,7 +399,7 @@ void get_weather()//天气数据获取
   }
 }
 
-void set_mode(bool mode)
+void set_mode(bool mode)//设备模式设定
 {
   static bool work_mode=true;
   static bool sleep_mode=true;
@@ -435,7 +441,7 @@ void digital_tube_display()//数码管显示
   //显示时间
   tm1637.display(date.hour+date.minte);  
 }
-
+ 
 void sensor_data_display()//传感器数据显示
 {
   //屏幕显示数据
@@ -457,7 +463,7 @@ void sensor_data_display()//传感器数据显示
   //显示日期
   u8g2.drawStr(2,2,(date.year+"-"+date.month+"-"+date.day).c_str());
   //显示星期
-  u8g2.drawStr(2,10,(weekDay(date.year.toInt(),date.month.toInt(),date.day.toInt())).c_str());
+  u8g2.drawStr(2,10,date.week.c_str());
   //显示温湿度等传感器数据
   u8g2.drawStr(1,22,("TEMP:"+String(temprature)).c_str());
   u8g2.drawXBMP(54,22,8,8,temperature_bmp);
@@ -524,29 +530,52 @@ void get_compute_data(AsyncWebServerRequest *request)//电脑数据传输
   if(request->hasParam("CPUUtilization",true))
   {
     uint8_t paramNumber=request->params();
-
     AsyncWebParameter* param;
-    String param_name;
+    //String param_name;
     uint16_t param_value;
-
     for(int i=0;i<paramNumber;i++)
     {
       param = request->getParam(i);
-      param_name=param->name();
+      //param_name=param->name();
       param_value=param->value().toInt();
       
-      if(param_name.equals("CPUUtilization"))compute_data.CPU_Utilization=param_value;
-      else if(param_name.equals("MemoryUtilization"))compute_data.Memory_Utilization=param_value;
-      else if(param_name.equals("GPUUtilization"))compute_data.GPU_Utilization=param_value;
-      else if(param_name.equals("Motherboard"))compute_data.Mother_board_Temp=param_value;
-      else if(param_name.equals("CPU"))compute_data.CPU_Fan=param_value;
-      else if(param_name.equals("CPUDiode"))compute_data.CPU_Temp=param_value;
-      else if(param_name.equals("GPU"))compute_data.GPU_Fan=param_value;
-      else if(param_name.equals("GPUDiode"))compute_data.GPU_Temp=param_value;
-      
+      switch (i)
+      {
+      case 0:
+        compute_data.CPU_Utilization=param_value;
+        break;
+      case 1:
+        compute_data.Memory_Utilization=param_value;
+        break;
+      case 2:
+        compute_data.GPU_Utilization=param_value;
+        break;
+      case 3:
+        compute_data.Mother_board_Temp=param_value;
+        break;
+      case 4:
+        compute_data.CPU_Fan=param_value;
+        break;
+      case 5:
+        compute_data.CPU_Temp=param_value;
+        break;
+      case 6:
+        compute_data.GPU_Temp=param_value;
+        break;
+      case 7:
+        compute_data.GPU_Fan=param_value;
+        break;
+      }
+      // if(param_name.equals("CPUUtilization"))
+      // else if(param_name.equals("MemoryUtilization"))
+      // else if(param_name.equals("GPUUtilization"))
+      // else if(param_name.equals("Motherboard"))
+      // else if(param_name.equals("CPU"))
+      // else if(param_name.equals("CPUDiode"))
+      // else if(param_name.equals("GPU"))
+      // else if(param_name.equals("GPUDiode"))
     }
-    compute_data_flag=true;
-    
+    if(!compute_data_flag)compute_data_flag=true;
     request->send(200, "text/plain", "success!");
   }
 }
