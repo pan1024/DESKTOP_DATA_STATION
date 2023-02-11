@@ -12,6 +12,8 @@
 #include <DNSServer.h>
 #include <ArduinoJson.h>
 #include <little_fs_esp8266/little_fs.h>
+#include <ArduinoOTA.h>
+
 
 #define DHTPIN  5
 #define DHTTYPE DHT11 
@@ -189,13 +191,14 @@ CONFIG get_config(String config_str);
 void notFound(AsyncWebServerRequest *request);
 void get_compute_data(AsyncWebServerRequest *request);
 void set_config(AsyncWebServerRequest *request);
+void ota_init();
 
 void setup(){
   device_init();
   // LittleFS.begin();
   // Serial.begin(115200);
   // Serial.println(read_config_txt());
-
+   
   String config_str=read_config_txt();
   if(String("nullptr").equals(config_str))//读取不到配置文件
   {
@@ -232,6 +235,7 @@ void setup(){
   
 }
 void loop() {
+  ArduinoOTA.handle();//ota轮询
   if(device_config.start_sleep_time<=date.hour.toInt()&&date.hour.toInt()<=device_config.end_sleep_time)//休眠
   { 
     set_mode(false);//休眠模式
@@ -268,7 +272,7 @@ void loop() {
         compute_data_flag=false;
       }
       else{
-          display_mode_flag=false;
+        display_mode_flag=false;
       }
     }
     else if (currentMillis - previousMillis_refresh_monitor >= 300) {//屏幕刷新
@@ -312,6 +316,7 @@ void device_init()
   u8g2_prepare();
   u8g2.begin();
   LittleFS.begin();
+  ota_init();
 }
 
 String weekDay(int year,uint8_t month,uint8_t day){//通过年月日计算星期
@@ -720,4 +725,17 @@ CONFIG get_config(String config_str)//解析配置信息返回配置结构体
   result.end_sleep_time=end_sleep_time;
   result.city_code=city_code;
   return result;
+}
+
+void ota_init()
+{
+  ArduinoOTA.setHostname("DESKTOP_DATA_STATION_OTA");
+  ArduinoOTA.onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else // U_SPIFFS
+        type = "filesystem";
+    });
+  ArduinoOTA.begin();
 }
