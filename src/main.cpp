@@ -42,7 +42,7 @@ bool display_mode_flag=false;//显示数据类型的标志
 bool weather_switch_flag=true;//转换今天和明天的天气标志
 
 
-String home_page =R"rawliteral(
+const char home_page[] PROGMEM =R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -259,6 +259,8 @@ void loop() {
     else if (currentMillis - previousMillis_weather >= 10000) {//天气数据获取
       previousMillis_weather = currentMillis;
       get_weather();
+      server.begin();
+      
     }
     else if (currentMillis - previousMillis_colon >= 850) {//数码管刷新
       previousMillis_colon = currentMillis;
@@ -287,6 +289,8 @@ void loop() {
         sensor_data_display();//传感器数据展示
       }
     }
+    // server.reset();
+    ESP.wdtFeed();
   }
 }
 
@@ -527,7 +531,7 @@ void compute_data_display()//电脑数据显示
 
 void notFound(AsyncWebServerRequest *request)
 {
-  request->send(200, "text/html", home_page);
+  request->send_P(200, "text/html", home_page);
 }
 
 void get_compute_data(AsyncWebServerRequest *request)//电脑数据传输
@@ -581,7 +585,7 @@ void get_compute_data(AsyncWebServerRequest *request)//电脑数据传输
       // else if(param_name.equals("GPUDiode"))
     }
     if(!compute_data_flag)compute_data_flag=true;
-    request->send(200, "text/plain", "success!");
+    request->send(200);
   }
 }
 
@@ -647,8 +651,6 @@ uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
   IPAddress gateway(192, 168, 0, 1);
   IPAddress subnet(255, 255, 255, 0);
   IPAddress dns(192, 168, 0,1);
-
-  WiFi.disconnect(false,true);
 
   WiFi.mode(WIFI_STA);
   WiFi.config(staticIP, gateway, subnet, dns, dns);
