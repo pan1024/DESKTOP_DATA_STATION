@@ -33,9 +33,9 @@ AsyncWebServer server(80);
 
 String ip_address;//连接后获得的IP地址
 
-float temprature;//温度
-float humidity;//湿度
-float pressure;//大气压
+volatile float temprature;//温度
+volatile float humidity;//湿度
+volatile float pressure;//大气压
 
 bool compute_data_flag=false;//获取计算机信息的标志
 bool display_mode_flag=false;//显示数据类型的标志
@@ -159,12 +159,13 @@ COMPUTE_DATA compute_data;
 CONFIG device_config;
 
 //无阻塞延时的暂存时间变量
-unsigned long previousMillis_sensor = 0;
-unsigned long previousMillis_time = 0;
-unsigned long previousMillis_colon = 0;
-unsigned long previousMillis_weather = 0;
-unsigned long previousMillis_refresh_monitor= 0;
-unsigned long previousMillis_switch_display= 0;
+volatile uint64_t currentMillis;
+volatile unsigned long previousMillis_sensor = 0;
+volatile unsigned long previousMillis_time = 0;
+volatile unsigned long previousMillis_colon = 0;
+volatile unsigned long previousMillis_weather = 0;
+volatile unsigned long previousMillis_refresh_monitor= 0;
+volatile unsigned long previousMillis_switch_display= 0;
 
 static const unsigned char PROGMEM temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
 static const unsigned char PROGMEM humidity_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
@@ -172,7 +173,7 @@ static const unsigned char PROGMEM pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x
 
 void u8g2_prepare();
 void device_init();
-String weekDay(int year,uint8_t month,uint8_t day);
+String weekDay(uint16_t year,uint8_t month,uint8_t day);
 WEATHER weather_data_parse(String weather_data,int i);
 void get_date();
 void get_sensor_data();
@@ -213,10 +214,8 @@ void setup(){
     if(flag!=WL_CONNECTED)//连接失败
     {
       deleteFile("/config.txt");
-      digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光
       ESP.restart();
     }
-    digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光
     
     ip_address=WiFi.localIP().toString();//ip地址
 
@@ -231,9 +230,10 @@ void setup(){
     weather_http_client.begin(wifi_client,weather_url);
 
     get_date();//获取一次日期时间为下面的模式选择铺垫
+    get_weather(); 
   }
-  
 }
+
 void loop() {
   ArduinoOTA.handle();//ota轮询
   if(device_config.start_sleep_time<=date.hour.toInt()&&date.hour.toInt()<=device_config.end_sleep_time)//休眠
@@ -243,30 +243,37 @@ void loop() {
     delay(5000);
   }
   else{//正常工作
-    unsigned long currentMillis = millis();
+    currentMillis = millis();
 
     set_mode(true);//工作模式
     
-    if (currentMillis - previousMillis_sensor >= 400) {//传感器数据获取
+    if (currentMillis - previousMillis_sensor >= 500) {//传感器数据获取
       previousMillis_sensor = currentMillis;
       get_sensor_data();
+      currentMillis = millis();
     }
-    else if (currentMillis - previousMillis_time >= 1800) {//日期和时间数据获取
+   if (currentMillis - previousMillis_refresh_monitor >= 500) {//屏幕刷新
+      previousMillis_refresh_monitor = currentMillis;
+       
+      if(display_mode_flag)compute_data_display();//电脑数据展示 
+      else sensor_data_display();//传感器数据展示
+      
+      currentMillis = millis();
+    }
+   if (currentMillis - previousMillis_colon >= 900) {//数码管刷新
+      previousMillis_colon = currentMillis;
+      digital_tube_display();
+
+      currentMillis = millis();
+    }
+   if (currentMillis - previousMillis_time >= 1500) {//日期和时间数据获取
       previousMillis_time = currentMillis;
       get_date();
       weather_switch_flag=!weather_switch_flag;
+
+      currentMillis = millis();
     }
-    else if (currentMillis - previousMillis_weather >= 10000) {//天气数据获取
-      previousMillis_weather = currentMillis;
-      get_weather();
-      server.begin();
-      
-    }
-    else if (currentMillis - previousMillis_colon >= 850) {//数码管刷新
-      previousMillis_colon = currentMillis;
-      digital_tube_display();
-    }
-    else if(currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
+  if(currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
       previousMillis_switch_display = currentMillis;
       if(compute_data_flag)
       {
@@ -276,21 +283,14 @@ void loop() {
       else{
         display_mode_flag=false;
       }
+
+      currentMillis = millis();
     }
-    else if (currentMillis - previousMillis_refresh_monitor >= 300) {//屏幕刷新
-      previousMillis_refresh_monitor = currentMillis;
-       
-      if(display_mode_flag)
-      {
-        compute_data_display();//电脑数据展示 
-      }
-      else
-      {
-        sensor_data_display();//传感器数据展示
-      }
+  if (currentMillis - previousMillis_weather >= 10000) {//天气数据获取
+      previousMillis_weather = currentMillis;
+      get_weather(); 
+      currentMillis = millis();
     }
-    // server.reset();
-    ESP.wdtFeed();
   }
 }
 
@@ -323,7 +323,7 @@ void device_init()
   ota_init();
 }
 
-String weekDay(int year,uint8_t month,uint8_t day){//通过年月日计算星期
+String weekDay(uint16_t year,uint8_t month,uint8_t day){//通过年月日计算星期
   uint8_t week;
   String weekday="";
   year=year%100;
@@ -368,11 +368,11 @@ WEATHER weather_data_parse(String weather_data,int i)//天气json数据解析
 void get_sensor_data()
 {
   sensors_event_t event;
-      dht.temperature().getEvent(&event);
-      if (!(isnan(event.temperature)))  temprature=event.temperature;
-      dht.humidity().getEvent(&event);
-      if (!(isnan(event.relative_humidity))) humidity=event.relative_humidity;
-      if (bmp.takeForcedMeasurement()) pressure=bmp.readPressure();
+  dht.temperature().getEvent(&event);
+  if (!(isnan(event.temperature)))  temprature=event.temperature;
+  dht.humidity().getEvent(&event);
+  if (!(isnan(event.relative_humidity))) humidity=event.relative_humidity;
+  if (bmp.takeForcedMeasurement()) pressure=bmp.readPressure();
 }    
 
 void get_date(){//日期时间获取
@@ -669,7 +669,7 @@ uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
       u8g2.drawStr(0,0,"WIFI CONNECTING.......");
       u8g2.sendBuffer();
   }
- 
+  digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光 
 }
 
 void sever_start()//开启服务器
