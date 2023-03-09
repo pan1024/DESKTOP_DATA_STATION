@@ -14,13 +14,12 @@
 #include <little_fs_esp8266/little_fs.h>
 #include <ArduinoOTA.h>
 
-
 #define DHTPIN  5
 #define DHTTYPE DHT11 
 #define BMP_CS  4
 #define BACKGRPUND_LIGHT 15
 
-DHT_Unified dht(DHTPIN, DHTTYPE);//温湿度计模块
+DHT dht(DHTPIN, DHTTYPE);//温湿度计模块
 Adafruit_BMP280 bmp(BMP_CS);//气压计模块
 TM1637 tm1637(0, 16);//数码管模块
 U8G2_ST7567_JLX12864_F_4W_HW_SPI u8g2(U8G2_MIRROR, /* cs=*/ 1, /* dc=*/ 3, /* reset=*/ 2);//屏幕模块
@@ -35,11 +34,24 @@ String ip_address;//连接后获得的IP地址
 
 volatile float temprature;//温度
 volatile float humidity;//湿度
-volatile float pressure;//大气压
+volatile uint32_t pressure;//大气压
 
-bool compute_data_flag=false;//获取计算机信息的标志
-bool display_mode_flag=false;//显示数据类型的标志
-bool weather_switch_flag=true;//转换今天和明天的天气标志
+volatile bool compute_data_flag=false;//获取计算机信息的标志
+volatile bool display_mode_flag=false;//显示数据类型的标志
+volatile bool weather_switch_flag=true;//转换今天和明天的天气标志
+
+//无阻塞延时的暂存时间变量
+volatile uint64_t currentMillis;
+volatile unsigned long previousMillis_sensor = 0;
+volatile unsigned long previousMillis_time = 0;
+volatile unsigned long previousMillis_colon = 0;
+volatile unsigned long previousMillis_weather = 0;
+volatile unsigned long previousMillis_refresh_monitor= 0;
+volatile unsigned long previousMillis_switch_display= 0;
+
+static const unsigned char PROGMEM temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
+static const unsigned char PROGMEM percent_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
+static const unsigned char PROGMEM pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
 
 typedef struct{//天气数据结构体
   String day_weather;
@@ -57,7 +69,6 @@ typedef struct{//日期时间结构体
   String minte="99";
   String second="99";
   String week="unknow";
-
 }DATE;
 
 typedef struct{//电脑数据结构体
@@ -69,7 +80,6 @@ typedef struct{//电脑数据结构体
   uint16_t GPU_Temp;
   uint16_t GPU_Fan;
   uint16_t CPU_Fan;
-  
 }COMPUTE_DATA;
 
 typedef struct{//配置信息结构体
@@ -84,43 +94,6 @@ WEATHER weather[2];
 DATE date;
 COMPUTE_DATA compute_data;
 CONFIG device_config;
-
-//无阻塞延时的暂存时间变量
-volatile uint64_t currentMillis;
-volatile unsigned long previousMillis_sensor = 0;
-volatile unsigned long previousMillis_time = 0;
-volatile unsigned long previousMillis_colon = 0;
-volatile unsigned long previousMillis_weather = 0;
-volatile unsigned long previousMillis_refresh_monitor= 0;
-volatile unsigned long previousMillis_switch_display= 0;
-
-static const unsigned char PROGMEM temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
-static const unsigned char PROGMEM humidity_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
-static const unsigned char PROGMEM pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
-
-void u8g2_prepare();
-void device_init();
-String weekDay(uint16_t year,uint8_t month,uint8_t day);
-WEATHER weather_data_parse(String weather_data,int i);
-void get_date();
-void get_sensor_data();
-void get_weather();
-void set_mode(bool mode);
-void digital_tube_display();
-void sensor_data_display();
-void compute_data_display();
-void create_ap();
-uint8_t wifi_connect(String wifi_name,String wifi_password);
-void sever_start();
-void dns_server_start();
-void write_config_txt(CONFIG config);
-String read_config_txt();
-CONFIG get_config(String config_str);
-void notFound(AsyncWebServerRequest *request);
-void get_compute_data(AsyncWebServerRequest *request);
-void set_config(AsyncWebServerRequest *request);
-void ota_init();
-void wifi_station();
 
 const char home_page[] PROGMEM =R"rawliteral(
 <!DOCTYPE html>
@@ -194,6 +167,31 @@ const char home_page[] PROGMEM =R"rawliteral(
 </script>
 )rawliteral";
 
+void u8g2_prepare();
+void device_init();
+String weekDay(uint16_t year,uint8_t month,uint8_t day);
+WEATHER weather_data_parse(String weather_data,int i);
+void get_date();
+void get_sensor_data();
+void get_weather();
+void set_mode(bool mode);
+void digital_tube_display();
+void sensor_data_display();
+void compute_data_display();
+void create_ap();
+uint8_t wifi_connect(String wifi_name,String wifi_password);
+void sever_start();
+void dns_server_start();
+void write_config_txt(CONFIG config);
+String read_config_txt();
+CONFIG get_config(String config_str);
+void notFound(AsyncWebServerRequest *request);
+void get_compute_data(AsyncWebServerRequest *request);
+void set_config(AsyncWebServerRequest *request);
+void ota_init();
+void wifi_station();
+
+uint8_t network_station=0;//网络状态
 
 void setup(){
   device_init();
@@ -202,18 +200,15 @@ void setup(){
   // Serial.println(read_config_txt());
    
   String config_str=read_config_txt();
-  if(String("nullptr").equals(config_str))//读取不到配置文件
-  {
-      create_ap();//开启热点
-      sever_start();//开启服务器
-      dns_server_start();//开启dns服务器
+  if(String("nullptr").equals(config_str)){//读取不到配置文件
+    create_ap();//开启热点
+    sever_start();//开启服务器
+    dns_server_start();//开启dns服务器
   }
-  else//读取到配置文件
-  {
+  else{//读取到配置文件
     device_config=get_config(config_str);//获取配置信息
     uint8_t flag=wifi_connect(device_config.wifi_name,device_config.wifi_password);//连接wifi
-    if(flag!=WL_CONNECTED)//连接失败
-    {
+    if(flag!=WL_CONNECTED){//连接失败
       deleteFile("/config.txt");
       ESP.restart();
     }
@@ -231,16 +226,16 @@ void setup(){
     weather_http_client.begin(wifi_client,weather_url);
 
     get_date();//获取一次日期时间为下面的模式选择铺垫
-    get_weather(); 
+    get_weather(); //获取一次天气
   }
 }
-uint8_t network_station=0;
+
 void loop() {
   ArduinoOTA.handle();//ota轮询
-  if(device_config.start_sleep_time<=date.hour.toInt()&&date.hour.toInt()<=device_config.end_sleep_time)//休眠
-  { 
+  if(device_config.start_sleep_time<=date.hour.toInt()&&date.hour.toInt()<=device_config.end_sleep_time){//休眠
     set_mode(false);//休眠模式
     get_date();
+    wifi_station();
     delay(5000);
   }
   else{//正常工作
@@ -254,7 +249,8 @@ void loop() {
 
       currentMillis = millis();
     }
-   if (currentMillis - previousMillis_refresh_monitor >= 500) {//屏幕刷新
+
+    if (currentMillis - previousMillis_refresh_monitor >= 500) {//屏幕刷新
       previousMillis_refresh_monitor = currentMillis;
        
       if(display_mode_flag)compute_data_display();//电脑数据展示 
@@ -262,23 +258,25 @@ void loop() {
       
       currentMillis = millis();
     }
-   if (currentMillis - previousMillis_colon >= 800) {//数码管刷新
+
+    if (currentMillis - previousMillis_colon >= 800) {//数码管刷新
       previousMillis_colon = currentMillis;
       digital_tube_display();
 
       currentMillis = millis();
     }
-   if (currentMillis - previousMillis_time >= 1500) {//日期和时间数据获取
+
+    if (currentMillis - previousMillis_time >= 1500) {//日期和时间数据获取
       previousMillis_time = currentMillis;
       get_date();
       weather_switch_flag=!weather_switch_flag;//切换今天和明天的天气
 
       currentMillis = millis();
     }
-  if(currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
+
+    if(currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
       previousMillis_switch_display = currentMillis;
-      if(compute_data_flag)//存在电脑数据传输则定时切换显示数据
-      {
+      if(compute_data_flag){//存在电脑数据传输则定时切换显示数据
         display_mode_flag=!display_mode_flag;
         compute_data_flag=false;
       }
@@ -289,17 +287,17 @@ void loop() {
 
       currentMillis = millis();
     }
-  if (currentMillis - previousMillis_weather >= 10000) {//天气数据获取
+
+    if (currentMillis - previousMillis_weather >= 10000) {//天气数据获取
       previousMillis_weather = currentMillis;
       get_weather();
-       
+      
       currentMillis = millis();
     }
   }
 }
 
-void u8g2_prepare()
-{//屏幕初始化
+void u8g2_prepare(){//屏幕初始化
   u8g2.setFont(u8g2_font_minicute_tr);
   u8g2.setFontRefHeightExtendedText();
   u8g2.setDrawColor(1);
@@ -307,13 +305,12 @@ void u8g2_prepare()
   u8g2.setFontDirection(0);
 }
 
-void device_init()
-{
+void device_init(){
   pinMode(BACKGRPUND_LIGHT,OUTPUT);
 
   dht.begin();
   bmp.begin();
-  bmp.setSampling(Adafruit_BMP280::MODE_FORCED,     /* Operating Mode. */
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
                   Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
                   Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
                   Adafruit_BMP280::FILTER_X16,      /* Filtering. */
@@ -354,29 +351,30 @@ String weekDay(uint16_t year,uint8_t month,uint8_t day){//通过年月日计算�
   return weekday;
 }
 
-WEATHER weather_data_parse(String weather_data,int i)//天气json数据解析
-  {
-    DynamicJsonDocument weather_doc(1024);
-    deserializeJson(weather_doc, weather_data);//反序列化json
-    JsonObject obj = weather_doc.as<JsonObject>();
-    WEATHER weather;
-    JsonObject obj_temp=obj["forecasts"][0]["casts"][i];
-    weather.day_weather=obj_temp["dayweather"].as<String>();
-    weather.night_weather=obj_temp["nightweather"].as<String>();
-    weather.max_temperature=obj_temp["daytemp"].as<String>();
-    weather.min_temperature=obj_temp["nighttemp"].as<String>();
-    weather.wind_speed=obj_temp["daypower"].as<String>();
-    return weather;
-  }
+WEATHER weather_data_parse(String weather_data,int i){//天气json数据解析
+  DynamicJsonDocument weather_doc(1024);
+  deserializeJson(weather_doc, weather_data);//反序列化json
+  JsonObject obj = weather_doc.as<JsonObject>();
+  WEATHER weather;
+  JsonObject obj_temp=obj["forecasts"][0]["casts"][i];
+  weather.day_weather=obj_temp["dayweather"].as<String>();
+  weather.night_weather=obj_temp["nightweather"].as<String>();
+  weather.max_temperature=obj_temp["daytemp"].as<String>();
+  weather.min_temperature=obj_temp["nighttemp"].as<String>();
+  weather.wind_speed=obj_temp["daypower"].as<String>();
+  return weather;
+}
 
-void get_sensor_data()
-{
-  sensors_event_t event;
-  dht.temperature().getEvent(&event);
-  if (!(isnan(event.temperature)))  temprature=event.temperature;
-  dht.humidity().getEvent(&event);
-  if (!(isnan(event.relative_humidity))) humidity=event.relative_humidity;
-  if (bmp.takeForcedMeasurement()) pressure=bmp.readPressure();
+void get_sensor_data(){
+  // sensors_event_t event;
+  // dht.temperature().getEvent(&event);
+  // if (!(isnan(event.temperature)))  
+  temprature=dht.readTemperature();
+  // dht.humidity().getEvent(&event);
+  // if (!(isnan(event.relative_humidity))) 
+  humidity=dht.readHumidity();
+  // if (bmp.takeForcedMeasurement()) 
+  pressure=bmp.readPressure();
 }    
 
 void get_date(){//日期时间获取
@@ -404,11 +402,9 @@ void get_date(){//日期时间获取
   }
 }
 
-void get_weather()//天气数据获取
-{
+void get_weather(){//天气数据获取
  uint8_t httpCode = weather_http_client.GET();
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
-    //"sysTime2":"2021-12-07 21:07:31","sysTime1":"2021 12 07 210731"}
     DynamicJsonDocument weather_doc(1024);
     String weather_data=weather_http_client.getString();
     weather[0]=weather_data_parse(weather_data,0);     
@@ -416,8 +412,7 @@ void get_weather()//天气数据获取
   }
 }
 
-void set_mode(bool mode)//设备模式设定
-{
+void set_mode(bool mode){//设备模式设定
   static bool work_mode=true;
   static bool sleep_mode=true;
   if(mode)
@@ -427,7 +422,7 @@ void set_mode(bool mode)//设备模式设定
       digitalWrite(BACKGRPUND_LIGHT,HIGH);//屏幕背光设置
       u8g2.sleepOff();
       tm1637.onMode();
-      bmp.setSampling(Adafruit_BMP280::MODE_FORCED,     /* Operating Mode. */
+      bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
                   Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
                   Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
                   Adafruit_BMP280::FILTER_X16,      /* Filtering. */
@@ -451,16 +446,14 @@ void set_mode(bool mode)//设备模式设定
 
 }
 
-void digital_tube_display()//数码管显示
-{
+void digital_tube_display(){//数码管显示
   tm1637.refresh();
   tm1637.switchColon();
   //显示时间
   tm1637.display(date.hour+date.minte);  
 }
  
-void sensor_data_display()//传感器数据显示
-{
+void sensor_data_display(){//传感器数据显示
   //屏幕显示数据
   u8g2.clearBuffer();
   //设置边框
@@ -486,9 +479,9 @@ void sensor_data_display()//传感器数据显示
   u8g2.drawStr(1,22,("TEMP:"+String(temprature)).c_str());
   u8g2.drawXBMP(54,22,8,8,temperature_bmp);
   u8g2.drawStr(1,31,("HUMI:"+String(humidity)).c_str());
-  u8g2.drawXBMP(54,31,8,8,humidity_bmp);
-  if (pressure >= 101325) u8g2.drawStr(1,40,("HIGH:"+String((int)pressure- 101325)).c_str());
-  else u8g2.drawStr(1,40,("LOW:"+String(101325-(int)pressure)).c_str());
+  u8g2.drawXBMP(54,31,8,8,percent_bmp);
+  if (pressure >= 101325) u8g2.drawStr(1,40,("HIGH:"+String(pressure- 101325)).c_str());
+  else u8g2.drawStr(1,40,("LOW:"+String(101325-pressure)).c_str());
   u8g2.drawXBMP(54,40,8,8,pressure_bmp);
   //显示ip地址
   u8g2.setDrawColor(2);
@@ -517,8 +510,7 @@ void sensor_data_display()//传感器数据显示
   u8g2.setFont(u8g2_font_minicute_tr);
 }
 
-void compute_data_display()//电脑数据显示
-{
+void compute_data_display(){//电脑数据显示
   u8g2.clearBuffer();
   u8g2.drawStr(0,0,("CPU TEMP--------"+String(compute_data.CPU_Temp)).c_str());
   u8g2.drawXBMP(110,0,8,8,temperature_bmp);
@@ -527,24 +519,22 @@ void compute_data_display()//电脑数据显示
   u8g2.drawStr(0,16,("BOARD TEMP-----"+String(compute_data.Mother_board_Temp)).c_str());
   u8g2.drawXBMP(110,16,8,8,temperature_bmp);
   u8g2.drawStr(0,24,("CPU USE---------"+String(compute_data.CPU_Utilization)).c_str());
-  u8g2.drawXBMP(104,24,8,8,humidity_bmp);
+  u8g2.drawXBMP(104,24,8,8,percent_bmp);
   u8g2.drawStr(0,32,("GPU USE---------"+String(compute_data.GPU_Utilization)).c_str());
-  u8g2.drawXBMP(106,32,8,8,humidity_bmp);
+  u8g2.drawXBMP(106,32,8,8,percent_bmp);
   u8g2.drawStr(0,40,("MEMORY USE-----"+String(compute_data.Memory_Utilization)).c_str());
-  u8g2.drawXBMP(108,40,8,8,humidity_bmp);
+  u8g2.drawXBMP(108,40,8,8,percent_bmp);
   u8g2.drawStr(0,48,("CPU FNA---------"+String(compute_data.CPU_Fan)+"RPM").c_str());
   u8g2.drawStr(0,56,("GPU FAN---------"+String(compute_data.GPU_Fan)+"RPM").c_str());
   u8g2.sendBuffer();
   
 }
 
-void notFound(AsyncWebServerRequest *request)
-{
+void notFound(AsyncWebServerRequest *request){
   request->send_P(200, "text/html", home_page);
 }
 
-void get_compute_data(AsyncWebServerRequest *request)//电脑数据传输
-{
+void get_compute_data(AsyncWebServerRequest *request){//电脑数据传输
   if(request->hasParam("CPUUtilization",true))
   {
     uint8_t paramNumber=request->params();
@@ -598,8 +588,7 @@ void get_compute_data(AsyncWebServerRequest *request)//电脑数据传输
   }
 }
 
-void set_config(AsyncWebServerRequest *request)//配置信息网页
-{
+void set_config(AsyncWebServerRequest *request){//配置信息网页
   if(request->hasParam("wifiName",true)){
     uint8_t param_number=request->params();
     AsyncWebParameter* param;
@@ -645,16 +634,14 @@ void set_config(AsyncWebServerRequest *request)//配置信息网页
   } 
 }
 
-void create_ap()//创建热点
-{
+void create_ap(){//创建热点
   IPAddress apIP(8,8,4,4);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP("DESKTOP_DATA_STATION");
 } 
 
-uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
-{
+uint8_t wifi_connect(String wifi_name,String wifi_password){//连接wifi
   //静态iP信息
   // IPAddress staticIP(192, 168, 0, 253);
   // IPAddress gateway(192, 168, 0, 1);
@@ -662,7 +649,7 @@ uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
   // IPAddress dns(192, 168, 0,1);
 
   WiFi.mode(WIFI_STA);
-  // WiFi.config(staticIP, gateway, subnet, dns, dns);
+  //WiFi.config(staticIP, gateway, subnet, dns, dns);
   WiFi.setAutoReconnect(true);
   WiFi.begin(wifi_name, wifi_password);
   
@@ -670,21 +657,20 @@ uint8_t wifi_connect(String wifi_name,String wifi_password)//连接wifi
   digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
   while (true)
   {
-      ESP.wdtFeed();//feed watch door dog
-      delay(500);
-      uint8_t flag=WiFi.status();
-      if(flag!=WL_CONNECTED)++disconnected;
-      if(flag==WL_CONNECTED)return WL_CONNECTED;
-      if(disconnected>=10)return WL_DISCONNECTED;//5秒后依旧未连接
-      u8g2.clearBuffer();
-      u8g2.drawStr(0,0,"WIFI CONNECTING.......");
-      u8g2.sendBuffer();
+    ESP.wdtFeed();//feed watch door dog
+    delay(500);
+    uint8_t flag=WiFi.status();
+    if(flag!=WL_CONNECTED)++disconnected;
+    if(flag==WL_CONNECTED)return WL_CONNECTED;
+    if(disconnected>=10)return WL_DISCONNECTED;//5秒后依旧未连接
+    u8g2.clearBuffer();
+    u8g2.drawStr(0,0,"WIFI CONNECTING.......");
+    u8g2.sendBuffer();
   }
   digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光 
 }
 
-void wifi_station()
-{
+void wifi_station(){
   if(!WiFi.isConnected())
   {
     ip_address="DISCONNECT";
@@ -695,7 +681,7 @@ void wifi_station()
     ip_address=WiFi.localIP().toString();//ip地址
   }
    
-  if(network_station>=10)//防止WiFi假死
+  if(network_station>=5)//防止WiFi假死
   {
     network_station=0;
     WiFi.disconnect();
@@ -709,8 +695,7 @@ void wifi_station()
   }
 }
 
-void sever_start()//开启服务器
-{
+void sever_start(){//开启服务器
   server.onNotFound(notFound);
   server.on("/uploadComputeData",HTTP_POST,get_compute_data);
   server.on("/setConfig",HTTP_POST,set_config);
@@ -718,39 +703,35 @@ void sever_start()//开启服务器
   server.begin();
 }
 
-void dns_server_start()//开启dns服务器
-{
-    IPAddress apIP(8,8,4,4);
-    const byte DNS_PORT = 53;
-    DNSServer dnsServer;
-    dnsServer.start(DNS_PORT, "*", apIP);
-    digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
-    u8g2.clearBuffer();
-    u8g2.drawStr(0,0,"WAIT CONFIGING.......");
-    u8g2.sendBuffer();
-    while (true) dnsServer.processNextRequest();
+void dns_server_start(){//开启dns服务器
+  IPAddress apIP(8,8,4,4);
+  const byte DNS_PORT = 53;
+  DNSServer dnsServer;
+  dnsServer.start(DNS_PORT, "*", apIP);
+  digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
+  u8g2.clearBuffer();
+  u8g2.drawStr(0,0,"WAIT CONFIGING.......");
+  u8g2.sendBuffer();
+  while (true) dnsServer.processNextRequest();
 }
 
-void write_config_txt(CONFIG config)//写入配置信息到config.txt
-{ 
-    DynamicJsonDocument doc(1024);
-    doc["wifi_name"] = config.wifi_name;
-    doc["wifi_password"]= config.wifi_password;
-    doc["start_sleep_time"]=config.start_sleep_time;
-    doc["end_sleep_time"]=config.end_sleep_time;
-    doc["city_code"]=config.city_code;
-    String data;
-    serializeJson(doc, data);
-    writeFile("/config.txt", data.c_str());//创建一个新的文件并写入
+void write_config_txt(CONFIG config){ //写入配置信息到config.txt
+  DynamicJsonDocument doc(1024);
+  doc["wifi_name"] = config.wifi_name;
+  doc["wifi_password"]= config.wifi_password;
+  doc["start_sleep_time"]=config.start_sleep_time;
+  doc["end_sleep_time"]=config.end_sleep_time;
+  doc["city_code"]=config.city_code;
+  String data;
+  serializeJson(doc, data);
+  writeFile("/config.txt", data.c_str());//创建一个新的文件并写入
 }
 
-String read_config_txt()//读取配置信息
-{
+String read_config_txt(){//读取配置信息
     return readFile("/config.txt");
 }
 
-CONFIG get_config(String config_str)//解析配置信息返回配置结构体
-{
+CONFIG get_config(String config_str){//解析配置信息返回配置结构体
   DynamicJsonDocument doc(1024);
   deserializeJson(doc, config_str);
   String wifi_name=doc["wifi_name"];
@@ -767,8 +748,7 @@ CONFIG get_config(String config_str)//解析配置信息返回配置结构体
   return result;
 }
 
-void ota_init()
-{
+void ota_init(){
   ArduinoOTA.setHostname("DESKTOP_DATA_STATION_OTA");
   ArduinoOTA.onStart([]() {
       String type;
