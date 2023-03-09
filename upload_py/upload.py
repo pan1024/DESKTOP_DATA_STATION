@@ -1,8 +1,6 @@
 import os, winreg
 import time
-
 import requests
-
 
 def get_equipment_info():
     if os.name != "nt":
@@ -19,7 +17,6 @@ def get_equipment_info():
                 result[attr[1]]["value"] = data
     return result
 
-
 def set_params():
     data = get_equipment_info()
     result = {}
@@ -30,12 +27,24 @@ def set_params():
 
 
 if __name__ == "__main__":
+    ip_address=""
+    while ip_address=='':
+        for i in range(2,255):
+            ip="http://192.168.0."+str(i)
+            url=ip+"/ipLocation"
+            try:
+                result = requests.get(url=url,timeout=0.1)
+                if result.text=="success":
+                    ip_address=ip
+                    break
+            except:
+                pass
     while True:
+        upload_url=ip_address+"/uploadComputeData"
         try:
-            result = requests.post(url="http://192.168.0.253/uploadComputeData", data=set_params())
+            result = requests.post(url=upload_url, data=set_params())
             while result.status_code == 200:
-                result = requests.post(url="http://192.168.0.253/uploadComputeData", data=set_params())
-                time.sleep(2)
+                result = requests.post(url=upload_url, data=set_params())
+                time.sleep(1)
         except:
             pass
-
