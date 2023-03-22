@@ -1,3 +1,5 @@
+#include <Arduino.h>
+#include <ESP8266WiFiMulti.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
@@ -17,16 +19,19 @@
 #define DHTPIN  5
 #define DHTTYPE DHT11 
 #define BMP_CS  4
+
+#define SCREEN_CS 1
+#define SCREEN_DC 3
+#define SCREEN_RESET 2
 #define BACKGRPUND_LIGHT 15
+
+#define DIGITAL_TUBE_CLK 0
+#define DIGITAL_TUBE_DATA 16
 
 DHT dht(DHTPIN, DHTTYPE);//温湿度计模块
 Adafruit_BMP280 bmp(BMP_CS);//气压计模块
-TM1637 tm1637(0, 16);//数码管模块
-U8G2_ST7567_JLX12864_F_4W_HW_SPI u8g2(U8G2_MIRROR, /* cs=*/ 1, /* dc=*/ 3, /* reset=*/ 2);//屏幕模块
-
-WiFiClient wifi_client;
-HTTPClient time_http_client;
-HTTPClient weather_http_client;
+TM1637 tm1637(DIGITAL_TUBE_CLK, DIGITAL_TUBE_DATA);//数码管模块
+U8G2_ST7567_JLX12864_F_4W_HW_SPI u8g2(U8G2_MIRROR, SCREEN_CS, SCREEN_DC, SCREEN_RESET);//屏幕模块
 
 AsyncWebServer server(80);
 
@@ -49,9 +54,9 @@ volatile unsigned long previousMillis_weather = 0;
 volatile unsigned long previousMillis_refresh_monitor= 0;
 volatile unsigned long previousMillis_switch_display= 0;
 
-static const unsigned char PROGMEM temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
-static const unsigned char PROGMEM percent_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
-static const unsigned char PROGMEM pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
+static const unsigned char  temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
+static const unsigned char  percent_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
+static const unsigned char  pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
 
 typedef struct{//天气数据结构体
   String day_weather;
@@ -72,14 +77,14 @@ typedef struct{//日期时间结构体
 }DATE;
 
 typedef struct{//电脑数据结构体
-  uint16_t CPU_Utilization;
-  uint16_t Memory_Utilization;
-  uint16_t GPU_Utilization;
-  uint16_t Mother_board_Temp;
-  uint16_t CPU_Temp;
-  uint16_t GPU_Temp;
-  uint16_t GPU_Fan;
-  uint16_t CPU_Fan;
+  String CPU_Utilization;
+  String Memory_Utilization;
+  String GPU_Utilization;
+  String Mother_board_Temp;
+  String CPU_Temp;
+  String GPU_Temp;
+  String GPU_Fan;
+  String CPU_Fan;
 }COMPUTE_DATA;
 
 typedef struct{//配置信息结构体
@@ -108,7 +113,6 @@ const char home_page[] PROGMEM =R"rawliteral(
 			 top: 30%;
 			 left: 50%;
 			 transform: translate(-50%,-50%);
-			 
 			  display: table-cell;
 			 /*垂直居中 */
 			 vertical-align: middle;
@@ -170,10 +174,11 @@ const char home_page[] PROGMEM =R"rawliteral(
 void u8g2_prepare();
 void device_init();
 String weekDay(uint16_t year,uint8_t month,uint8_t day);
-WEATHER weather_data_parse(String weather_data,int i);
+WEATHER weather_data_parse(String weather_data,int i,boolean flag);
 void get_date();
 void get_sensor_data();
 void get_weather();
+void get_weather2();//天气数据获取（使用心知
 void set_mode(bool mode);
 void digital_tube_display();
 void sensor_data_display();
@@ -194,6 +199,8 @@ void wifi_station();
 uint8_t network_station=0;//网络状态
 
 void setup(){
+  digitalWrite(BACKGRPUND_LIGHT,HIGH);
+  
   device_init();
   // LittleFS.begin();
   // Serial.begin(115200);
@@ -213,20 +220,18 @@ void setup(){
       ESP.restart();
     }
     
-    ip_address=WiFi.localIP().toString();//ip地址
+    ip_address=WiFi.localIP().toString();//获取ip地址
 
     sever_start();//开启服务器
 
-    String time_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
-    String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+device_config.city_code+"&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
-    
-    time_http_client.setTimeout(500);
-    time_http_client.begin(wifi_client,time_url);
-    weather_http_client.setTimeout(500);
-    weather_http_client.begin(wifi_client,weather_url);
+    u8g2.clearBuffer();
+    u8g2.drawStr(0,0,"LOADING SYSTEM.......");
+    u8g2.sendBuffer();
 
     get_date();//获取一次日期时间为下面的模式选择铺垫
-    get_weather(); //获取一次天气
+    get_weather2(); //获取一次天气
+
+    digitalWrite(BACKGRPUND_LIGHT,LOW);
   }
 }
 
@@ -274,7 +279,7 @@ void loop() {
       currentMillis = millis();
     }
 
-    if(currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
+    if (currentMillis - previousMillis_switch_display >= 5000){//每五秒钟切换一次显示模式（传感器数据或电脑数据
       previousMillis_switch_display = currentMillis;
       if(compute_data_flag){//存在电脑数据传输则定时切换显示数据
         display_mode_flag=!display_mode_flag;
@@ -288,9 +293,9 @@ void loop() {
       currentMillis = millis();
     }
 
-    if (currentMillis - previousMillis_weather >= 10000) {//天气数据获取
+    if (currentMillis - previousMillis_weather >= 600000) {//天气数据获取
       previousMillis_weather = currentMillis;
-      get_weather();
+      get_weather2();
       
       currentMillis = millis();
     }
@@ -324,9 +329,20 @@ void device_init(){
   ota_init();
 }
 
+void get_sensor_data(){
+  // sensors_event_t event;
+  // dht.temperature().getEvent(&event);
+  // if (!(isnan(event.temperature)))  
+  temprature=dht.readTemperature();
+  // dht.humidity().getEvent(&event);
+  // if (!(isnan(event.relative_humidity))) 
+  humidity=dht.readHumidity();
+  // if (bmp.takeForcedMeasurement()) 
+  pressure=bmp.readPressure();
+}    
+
 String weekDay(uint16_t year,uint8_t month,uint8_t day){//通过年月日计算星期
   uint8_t week;
-  String weekday="";
   year=year%100;
   if(month>=3)
   {
@@ -340,49 +356,31 @@ String weekDay(uint16_t year,uint8_t month,uint8_t day){//通过年月日计算�
   }
   switch(week%7)
   {
-      case 0:weekday="Sunday" ;break;
-      case 1:weekday="Monday" ;break;
-      case 2:weekday="Tuesday" ;break;
-      case 3:weekday="Wednesday" ;break;
-      case 4:weekday="Thursday" ;break;
-      case 5:weekday="Friday" ;break;
-      case 6:weekday="Saturday" ;break;
+      case 0:return "Sunday" ;
+      case 1:return "Monday" ;
+      case 2:return "Tuesday" ;
+      case 3:return "Wednesday" ;
+      case 4:return "Thursday" ;
+      case 5:return "Friday" ;
+      case 6:return "Saturday" ;
   }
-  return weekday;
+  return "ERROR";
 }
-
-WEATHER weather_data_parse(String weather_data,int i){//天气json数据解析
-  DynamicJsonDocument weather_doc(1024);
-  deserializeJson(weather_doc, weather_data);//反序列化json
-  JsonObject obj = weather_doc.as<JsonObject>();
-  WEATHER weather;
-  JsonObject obj_temp=obj["forecasts"][0]["casts"][i];
-  weather.day_weather=obj_temp["dayweather"].as<String>();
-  weather.night_weather=obj_temp["nightweather"].as<String>();
-  weather.max_temperature=obj_temp["daytemp"].as<String>();
-  weather.min_temperature=obj_temp["nighttemp"].as<String>();
-  weather.wind_speed=obj_temp["daypower"].as<String>();
-  return weather;
-}
-
-void get_sensor_data(){
-  // sensors_event_t event;
-  // dht.temperature().getEvent(&event);
-  // if (!(isnan(event.temperature)))  
-  temprature=dht.readTemperature();
-  // dht.humidity().getEvent(&event);
-  // if (!(isnan(event.relative_humidity))) 
-  humidity=dht.readHumidity();
-  // if (bmp.takeForcedMeasurement()) 
-  pressure=bmp.readPressure();
-}    
 
 void get_date(){//日期时间获取
-  uint8_t httpCode = time_http_client.GET();
+  String date_url="http://quan.suning.com/getSysTime.do";// 苏宁授时网页
+  WiFiClient wifi_client;
+  HTTPClient date_http_client;
+  date_http_client.setTimeout(500);
+  date_http_client.begin(wifi_client,date_url);
+
+  static uint8_t previous_day=0;
+  uint8_t httpCode = date_http_client.GET();
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
     //{"sysTime2":"2021-12-07 21:07:31","sysTime1":"20211207210731"}
     DynamicJsonDocument date_doc(1024);
-    deserializeJson(date_doc, time_http_client.getString());//反序列化json
+    deserializeJson(date_doc, date_http_client.getString());//反序列化json
+    date_http_client.end();
     JsonObject obj = date_doc.as<JsonObject>();
     String date_str=obj["sysTime1"];
     if(!date_str.equals("null"))
@@ -393,23 +391,83 @@ void get_date(){//日期时间获取
       date.hour=date_str.substring(8,10);
       date.minte=date_str.substring(10,12);
       date.second=date_str.substring(12,14);
-      date.week=weekDay(date.year.toInt(),date.month.toInt(),date.day.toInt());
+      if(previous_day!=date.day.toInt())
+      {
+        previous_day=date.day.toInt();
+        date.week=weekDay(date.year.toInt(),date.month.toInt(),date.day.toInt());
+      }
     }
     if(network_station!=0)network_station=0;
   }
   else{
     ++network_station;
   }
+  date_http_client.end();
 }
 
-void get_weather(){//天气数据获取
+void get_weather(){//天气数据获取（使用高德
+String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+device_config.city_code+"&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
+WiFiClient wifi_client;
+HTTPClient weather_http_client;
+weather_http_client.setTimeout(500);
+weather_http_client.begin(wifi_client,weather_url);
+
  uint8_t httpCode = weather_http_client.GET();
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
     DynamicJsonDocument weather_doc(1024);
     String weather_data=weather_http_client.getString();
-    weather[0]=weather_data_parse(weather_data,0);     
-    weather[1]=weather_data_parse(weather_data,1);
+    weather_http_client.end();
+    weather[0]=weather_data_parse(weather_data,0,true);     
+    weather[1]=weather_data_parse(weather_data,1,true);
   }
+}
+
+void get_weather2(){//天气数据获取（使用心知 
+  WiFiClient weather_client;  
+  weather_client.setTimeout(500);
+  // String reqRes = "/v3/weather/daily.json?key=SA7viYHe_aFgd8u06&location=WTG7R0CSBHZ9&language=zh-Hans&unit=c&start=0&day=0" ;
+  // 建立http请求信息
+  // String httpRequest = String("GET ") + reqRes + " HTTP/1.1\r\n" + "Host: api.seniverse.com"+ "\r\n" +"Connection: close\r\n\r\n";
+  
+  String httpRequest = String("GET ") +"/v3/weather/daily.json?key=SA7viYHe_aFgd8u06&location=WTG7R0CSBHZ9&language=zh-Hans&unit=c&start=0&day=0 HTTP/1.1\r\nHost: api.seniverse.com\r\nConnection: close\r\n\r\n";
+  if (weather_client.connect("api.seniverse.com", 80)){
+    // 向服务器发送http请求信息
+    weather_client.print(httpRequest);
+    // 使用find跳过HTTP响应头
+    String weather_data;
+    if (weather_client.find("\r\n\r\n")) weather_data = weather_client.readStringUntil('\n');
+    weather_client.stop(); 
+     //利用ArduinoJson库解析心知天气响应信息
+    weather[0]=weather_data_parse(weather_data,0,false);     
+    weather[1]=weather_data_parse(weather_data,1,false);
+ }
+}
+
+WEATHER weather_data_parse(String weather_data,int i,boolean flag){//天气json数据解析
+  DynamicJsonDocument weather_doc(1024);
+  deserializeJson(weather_doc, weather_data);//反序列化json
+  JsonObject obj = weather_doc.as<JsonObject>();
+  JsonObject obj_temp;
+  WEATHER weather;
+  if(flag)
+  {
+    obj_temp=obj["forecasts"][0]["casts"][i];
+    weather.day_weather=obj_temp["dayweather"].as<String>();
+    weather.night_weather=obj_temp["nightweather"].as<String>();
+    weather.max_temperature=obj_temp["daytemp"].as<String>();
+    weather.min_temperature=obj_temp["nighttemp"].as<String>();
+    weather.wind_speed=obj_temp["daypower"].as<String>();
+  }
+  else{
+    obj_temp=obj["results"][0]["daily"][i];
+    weather.day_weather=obj_temp["text_day"].as<String>();
+    weather.night_weather=obj_temp["text_night"].as<String>();
+    weather.max_temperature=obj_temp["high"].as<String>();
+    weather.min_temperature=obj_temp["low"].as<String>();
+    weather.wind_speed=obj_temp["wind_scale"].as<String>();
+  }
+  
+  return weather;
 }
 
 void set_mode(bool mode){//设备模式设定
@@ -419,7 +477,7 @@ void set_mode(bool mode){//设备模式设定
   {
     if(work_mode)//配置正常工作模式
     {
-      digitalWrite(BACKGRPUND_LIGHT,HIGH);//屏幕背光设置
+      digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开屏幕背光
       u8g2.sleepOff();
       tm1637.onMode();
       bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
@@ -435,7 +493,7 @@ void set_mode(bool mode){//设备模式设定
   {
     if(sleep_mode)//配置休眠模式
     {
-      digitalWrite(BACKGRPUND_LIGHT,LOW);//屏幕背光设置
+      digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭屏幕背光
       tm1637.offMode();//关闭数码
       u8g2.sleepOn();//关闭屏幕
       bmp.setSampling(bmp.MODE_SLEEP);
@@ -452,8 +510,9 @@ void digital_tube_display(){//数码管显示
   //显示时间
   tm1637.display(date.hour+date.minte);  
 }
- 
+
 void sensor_data_display(){//传感器数据显示
+  u8g2.setFont(u8g2_font_minicute_tr);
   //屏幕显示数据
   u8g2.clearBuffer();
   //设置边框
@@ -500,32 +559,34 @@ void sensor_data_display(){//传感器数据显示
     temp_weather=weather[1];
     temp_date="明天";
   }
+
   u8g2.setFont(u8g2_font_wqy12_t_gb2312a);
   u8g2.drawUTF8(65,1,("-- "+temp_date+" --").c_str());
   u8g2.drawUTF8(65,14,("日:"+temp_weather.day_weather).c_str());
   u8g2.drawUTF8(65,26,("夜:"+temp_weather.night_weather).c_str());
-  u8g2.drawUTF8(65,38,String("温度:"+temp_weather.min_temperature+".."+temp_weather.max_temperature).c_str());
+  u8g2.drawUTF8(65,38,("温度:"+temp_weather.min_temperature+".."+temp_weather.max_temperature).c_str());
   u8g2.drawUTF8(65,50,("风速:"+temp_weather.wind_speed+"级").c_str());
+
   u8g2.sendBuffer();
-  u8g2.setFont(u8g2_font_minicute_tr);
 }
 
 void compute_data_display(){//电脑数据显示
+  u8g2.setFont(u8g2_font_minicute_tr);
   u8g2.clearBuffer();
-  u8g2.drawStr(0,0,("CPU TEMP--------"+String(compute_data.CPU_Temp)).c_str());
+  u8g2.drawStr(0,0,("CPU TEMP--------"+compute_data.CPU_Temp).c_str());
   u8g2.drawXBMP(110,0,8,8,temperature_bmp);
-  u8g2.drawStr(0,8,("GPU TEMP--------"+String(compute_data.GPU_Temp)).c_str());
+  u8g2.drawStr(0,8,("GPU TEMP--------"+compute_data.GPU_Temp).c_str());
   u8g2.drawXBMP(110,8,8,8,temperature_bmp);
-  u8g2.drawStr(0,16,("BOARD TEMP-----"+String(compute_data.Mother_board_Temp)).c_str());
+  u8g2.drawStr(0,16,("BOARD TEMP-----"+compute_data.Mother_board_Temp).c_str());
   u8g2.drawXBMP(110,16,8,8,temperature_bmp);
-  u8g2.drawStr(0,24,("CPU USE---------"+String(compute_data.CPU_Utilization)).c_str());
+  u8g2.drawStr(0,24,("CPU USE---------"+compute_data.CPU_Utilization).c_str());
   u8g2.drawXBMP(104,24,8,8,percent_bmp);
-  u8g2.drawStr(0,32,("GPU USE---------"+String(compute_data.GPU_Utilization)).c_str());
+  u8g2.drawStr(0,32,("GPU USE---------"+compute_data.GPU_Utilization).c_str());
   u8g2.drawXBMP(106,32,8,8,percent_bmp);
-  u8g2.drawStr(0,40,("MEMORY USE-----"+String(compute_data.Memory_Utilization)).c_str());
+  u8g2.drawStr(0,40,("MEMORY USE-----"+compute_data.Memory_Utilization).c_str());
   u8g2.drawXBMP(108,40,8,8,percent_bmp);
-  u8g2.drawStr(0,48,("CPU FNA---------"+String(compute_data.CPU_Fan)+"RPM").c_str());
-  u8g2.drawStr(0,56,("GPU FAN---------"+String(compute_data.GPU_Fan)+"RPM").c_str());
+  u8g2.drawStr(0,48,("CPU FAN---------"+compute_data.CPU_Fan+"RPM").c_str());
+  u8g2.drawStr(0,56,("GPU FAN---------"+compute_data.GPU_Fan+"RPM").c_str());
   u8g2.sendBuffer();
   
 }
@@ -540,39 +601,38 @@ void get_compute_data(AsyncWebServerRequest *request){//电脑数据传输
     uint8_t paramNumber=request->params();
     AsyncWebParameter* param;
     // String param_name;
-    uint16_t param_value;
+    String param_value;
     for(int i=0;i<paramNumber;i++)
     {
       param = request->getParam(i);
       // param_name=param->name();
-      param_value=param->value().toInt();
+      param_value=param->value();
       
-      switch (i)
-      {
-      case 0:
-        compute_data.CPU_Utilization=param_value;
-        break;
-      case 1:
-        compute_data.Memory_Utilization=param_value;
-        break;
-      case 2:
-        compute_data.GPU_Utilization=param_value;
-        break;
-      case 3:
-        compute_data.Mother_board_Temp=param_value;
-        break;
-      case 4:
-        compute_data.CPU_Fan=param_value;
-        break;
-      case 5:
-        compute_data.CPU_Temp=param_value;
-        break;
-      case 6:
-        compute_data.GPU_Temp=param_value;
-        break;
-      case 7:
-        compute_data.GPU_Fan=param_value;
-        break;
+      switch (i){
+        case 0:
+          compute_data.CPU_Utilization=param_value;
+          break;
+        case 1:
+          compute_data.Memory_Utilization=param_value;
+          break;
+        case 2:
+          compute_data.GPU_Utilization=param_value;
+          break;
+        case 3:
+          compute_data.Mother_board_Temp=param_value;
+          break;
+        case 4:
+          compute_data.CPU_Fan=param_value;
+          break;
+        case 5:
+          compute_data.CPU_Temp=param_value;
+          break;
+        case 6:
+          compute_data.GPU_Temp=param_value;
+          break;
+        case 7:
+          compute_data.GPU_Fan=param_value;
+          break;
       }
       // if(param_name.equals("CPUUtilization"))compute_data.CPU_Utilization=param_value;
       // else if(param_name.equals("MemoryUtilization"))compute_data.Memory_Utilization=param_value;
@@ -634,6 +694,14 @@ void set_config(AsyncWebServerRequest *request){//配置信息网页
   } 
 }
 
+void sever_start(){//开启服务器
+  server.onNotFound(notFound);
+  server.on("/uploadComputeData",HTTP_POST,get_compute_data);
+  server.on("/setConfig",HTTP_POST,set_config);
+  server.on("/ipAddress",HTTP_GET,[](AsyncWebServerRequest *request){request->send(200,"text/plain","success");});
+  server.begin();
+}
+
 void create_ap(){//创建热点
   IPAddress apIP(8,8,4,4);
   WiFi.mode(WIFI_AP);
@@ -652,55 +720,47 @@ uint8_t wifi_connect(String wifi_name,String wifi_password){//连接wifi
   //WiFi.config(staticIP, gateway, subnet, dns, dns);
   WiFi.setAutoReconnect(true);
   WiFi.begin(wifi_name, wifi_password);
-  
   uint8_t disconnected=0;
-  digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
   while (true)
   {
     ESP.wdtFeed();//feed watch door dog
     delay(500);
     uint8_t flag=WiFi.status();
     if(flag!=WL_CONNECTED)++disconnected;
-    if(flag==WL_CONNECTED)return WL_CONNECTED;
-    if(disconnected>=10)return WL_DISCONNECTED;//5秒后依旧未连接
+    else return WL_CONNECTED;
+    if(disconnected>=20)return WL_DISCONNECTED;//10秒后依旧未连接
     u8g2.clearBuffer();
     u8g2.drawStr(0,0,"WIFI CONNECTING.......");
     u8g2.sendBuffer();
   }
-  digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭背光 
 }
 
 void wifi_station(){
-  if(!WiFi.isConnected())
-  {
+   if(network_station>=5)
+   {
     ip_address="DISCONNECT";
-    WiFi.reconnect();
-  }
-  else
-  {
+   }
+   else{
     ip_address=WiFi.localIP().toString();//ip地址
-  }
-   
-  if(network_station>=5)//防止WiFi假死
-  {
-    network_station=0;
-    WiFi.disconnect();
-    delay(100);
-    WiFi.begin(device_config.wifi_name,device_config.wifi_password);
-    while(!WiFi.isConnected())
-    {
-      delay(200);
-      ESP.wdtFeed();
-    }
-  }
-}
-
-void sever_start(){//开启服务器
-  server.onNotFound(notFound);
-  server.on("/uploadComputeData",HTTP_POST,get_compute_data);
-  server.on("/setConfig",HTTP_POST,set_config);
-  server.on("/ipLocation",HTTP_GET,[](AsyncWebServerRequest *request){request->send(200,"text/plain","success");});
-  server.begin();
+   }
+  // if(network_station>=5){//防止WiFi假死
+  //   if (weather_http_client.GET() != HTTP_CODE_OK) { 
+  //     network_station=0;
+  //     WiFi.disconnect();                                
+  //     delay(100);
+  //     if(!WiFi.isConnected())
+  //     {
+  //       WiFi.begin(device_config.wifi_name,device_config.wifi_password);
+  //       uint8_t flag=0;
+  //       while(!WiFi.isConnected())
+  //       {
+  //         flag++;
+  //         delay(500);
+  //         if(flag>20) ESP.restart();
+  //       }
+  //     }
+  //   }
+  // }
 }
 
 void dns_server_start(){//开启dns服务器
