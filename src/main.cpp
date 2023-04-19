@@ -23,7 +23,7 @@
 #define SCREEN_CS 1
 #define SCREEN_DC 3
 #define SCREEN_RESET 2
-#define BACKGRPUND_LIGHT 15
+#define SCREEN_BACKGROUND_LIGHT 15
 
 #define DIGITAL_TUBE_CLK 0
 #define DIGITAL_TUBE_DATA 16
@@ -37,26 +37,27 @@ AsyncWebServer server(80);
 
 String ip_address;//连接后获得的IP地址
 
-volatile float temprature;//温度
-volatile float humidity;//湿度
-volatile uint32_t pressure;//大气压
+float temprature;//温度
+float humidity;//湿度
+uint32_t pressure;//大气压
 
-volatile bool compute_data_flag=false;//获取计算机信息的标志
-volatile bool display_mode_flag=false;//显示数据类型的标志
-volatile bool weather_switch_flag=true;//转换今天和明天的天气标志
+
+bool compute_data_flag=false;//获取计算机信息的标志
+bool display_mode_flag=false;//显示数据类型的标志
+bool weather_switch_flag=true;//转换今天和明天的天气标志
 
 //无阻塞延时的暂存时间变量
-volatile uint64_t currentMillis;
-volatile unsigned long previousMillis_sensor = 0;
-volatile unsigned long previousMillis_time = 0;
-volatile unsigned long previousMillis_colon = 0;
-volatile unsigned long previousMillis_weather = 0;
-volatile unsigned long previousMillis_refresh_monitor= 0;
-volatile unsigned long previousMillis_switch_display= 0;
+unsigned long currentMillis;
+unsigned long previousMillis_sensor = 0;
+unsigned long previousMillis_time = 0;
+unsigned long previousMillis_colon = 0;
+unsigned long previousMillis_weather = 0;
+unsigned long previousMillis_refresh_monitor= 0;
+unsigned long previousMillis_switch_display= 0;
 
-static const unsigned char  temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
-static const unsigned char  percent_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
-static const unsigned char  pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
+const unsigned char  temperature_bmp[] = {0x07,0x05,0xF7,0x08,0x08,0x08,0x08,0xF0};//摄氏度符号
+const unsigned char  percent_bmp[] = {0x98,0x58,0x20,0x10,0x08,0x04,0x1A,0x19};//百分比符号
+const unsigned char  pressure_bmp[] = {0x00,0x0F,0x09,0x79,0x5F,0x51,0xF1,0x01};//帕符号
 
 typedef struct{//天气数据结构体
   String day_weather;
@@ -99,77 +100,9 @@ WEATHER weather[2];
 DATE date;
 COMPUTE_DATA compute_data;
 CONFIG device_config;
+String wifi_list="";
 
-const char home_page[] PROGMEM =R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-	<meta charset="utf-8" />
-	<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=0">
-	<title>WIFI_SETTING</title>
-	<style>
-		.div1{
-			position: absolute;
-			 top: 30%;
-			 left: 50%;
-			 transform: translate(-50%,-50%);
-			  display: table-cell;
-			 /*垂直居中 */
-			 vertical-align: middle;
-			 /*水平居中*/
-			 text-align: center;
-		}
-		.submit_div{
-			background-color: blue;
-			color: white;
-			border-radius: 8px;
-			 width: 300px;
-			 height: 35px;
-		}
-		.input_div
-		{
-			border: 1px solid #0000FF;
-			border-radius: 20px;
-			width: 300px;
-			height: 35px;
-			font-size: 20px;
-		}
-		.input_div_2
-		{
-			border: 1px solid #0000FF;
-			border-radius: 20px;
-			width: 145px;
-			height: 35px;
-			font-size: 20px;
-		}
-	</style>
-</head>
-<body>
-	<div class="div1">
-		<h1>信息设置</h1>
-		<form name="wifiset" onsubmit="return validateForm()" action="/setConfig" method="post" target="myframe">
-			<label for="">WiFi信息设置</label>
-			<br />
-			<input name="wifiName" type="text" placeholder="WIFI账号" class="input_div">
-			<br />
-			<input name="wifiPassword" type="password" placeholder="WIFI密码" class="input_div">
-			<br /><br />
-			<label for="">休眠时间设置</label>
-			<br />
-			<input name="startSleepTime" type="text" placeholder="开始休眠时间" class="input_div_2">
-			<input name="endSleepTime" type="text" placeholder="停止休眠时间" class="input_div_2">
-			<br /><br />
-			<label for="">天气设置</label>
-			<br />
-			<input name="cityCode" type="text" placeholder="城市代码(身份证前6位)" class="input_div">
-			<br /><br />
-			<input type='submit' value='确认' class="submit_div">
-		</form>
-	</div>
-</body>
-<script type="text/javascript">
-</script>
-)rawliteral";
+
 
 void u8g2_prepare();
 void device_init();
@@ -195,11 +128,13 @@ void get_compute_data(AsyncWebServerRequest *request);
 void set_config(AsyncWebServerRequest *request);
 void ota_init();
 void wifi_station();
+String* scan_wifi();
+String select_scan_wifi(String* wifi_array);
 
 uint8_t network_station=0;//网络状态
 
 void setup(){
-  digitalWrite(BACKGRPUND_LIGHT,HIGH);
+  digitalWrite(SCREEN_BACKGROUND_LIGHT,HIGH);
   
   device_init();
   // LittleFS.begin();
@@ -207,8 +142,9 @@ void setup(){
   // Serial.println(read_config_txt());
    
   String config_str=read_config_txt();
-  if(String("nullptr").equals(config_str)){//读取不到配置文件
+  if(String("nullptr").equals(config_str)){//配置文件不存在时会返回nullptr
     create_ap();//开启热点
+    wifi_list=select_scan_wifi(scan_wifi());
     sever_start();//开启服务器
     dns_server_start();//开启dns服务器
   }
@@ -219,7 +155,7 @@ void setup(){
       deleteFile("/config.txt");
       ESP.restart();
     }
-    
+    wifi_list=select_scan_wifi(scan_wifi());
     ip_address=WiFi.localIP().toString();//获取ip地址
 
     sever_start();//开启服务器
@@ -231,7 +167,7 @@ void setup(){
     get_date();//获取一次日期时间为下面的模式选择铺垫
     get_weather2(); //获取一次天气
 
-    digitalWrite(BACKGRPUND_LIGHT,LOW);
+    digitalWrite(SCREEN_BACKGROUND_LIGHT,LOW);
   }
 }
 
@@ -248,18 +184,15 @@ void loop() {
 
     currentMillis = millis();
 
-    if (currentMillis - previousMillis_sensor >= 500) {//传感器数据获取
-      previousMillis_sensor = currentMillis;
-      get_sensor_data();
-
-      currentMillis = millis();
-    }
-
     if (currentMillis - previousMillis_refresh_monitor >= 500) {//屏幕刷新
       previousMillis_refresh_monitor = currentMillis;
        
       if(display_mode_flag)compute_data_display();//电脑数据展示 
-      else sensor_data_display();//传感器数据展示
+      else 
+      {
+       get_sensor_data();
+       sensor_data_display();//传感器数据展示
+      }
       
       currentMillis = millis();
     }
@@ -271,7 +204,7 @@ void loop() {
       currentMillis = millis();
     }
 
-    if (currentMillis - previousMillis_time >= 1500) {//日期和时间数据获取
+    if (currentMillis - previousMillis_time >= 1000) {//日期和时间数据获取
       previousMillis_time = currentMillis;
       get_date();
       weather_switch_flag=!weather_switch_flag;//切换今天和明天的天气
@@ -293,9 +226,9 @@ void loop() {
       currentMillis = millis();
     }
 
-    if (currentMillis - previousMillis_weather >= 600000) {//天气数据获取
+    if (currentMillis - previousMillis_weather >= 300000) {//天气数据获取
       previousMillis_weather = currentMillis;
-      get_weather2();
+      get_weather();
       
       currentMillis = millis();
     }
@@ -311,7 +244,7 @@ void u8g2_prepare(){//屏幕初始化
 }
 
 void device_init(){
-  pinMode(BACKGRPUND_LIGHT,OUTPUT);
+  pinMode(SCREEN_BACKGROUND_LIGHT,OUTPUT);
 
   dht.begin();
   bmp.begin();
@@ -374,7 +307,7 @@ void get_date(){//日期时间获取
   date_http_client.setTimeout(500);
   date_http_client.begin(wifi_client,date_url);
 
-  static uint8_t previous_day=0;
+  static String previous_day="0";
   uint8_t httpCode = date_http_client.GET();
   if ((httpCode > 0)&&(httpCode == HTTP_CODE_OK) ) { 
     //{"sysTime2":"2021-12-07 21:07:31","sysTime1":"20211207210731"}
@@ -385,15 +318,15 @@ void get_date(){//日期时间获取
     String date_str=obj["sysTime1"];
     if(!date_str.equals("null"))
     {
-      date.year=date_str.substring(0,4);
-      date.month=date_str.substring(4,6);
-      date.day=date_str.substring(6,8);
       date.hour=date_str.substring(8,10);
       date.minte=date_str.substring(10,12);
       date.second=date_str.substring(12,14);
-      if(previous_day!=date.day.toInt())
+      if(!previous_day.equals(date_str.substring(6,8)))//只有日期发生变化才重新获取年月日星期
       {
-        previous_day=date.day.toInt();
+        date.year=date_str.substring(0,4);
+        date.month=date_str.substring(4,6);
+        date.day=date_str.substring(6,8);
+        previous_day=date.day;
         date.week=weekDay(date.year.toInt(),date.month.toInt(),date.day.toInt());
       }
     }
@@ -402,11 +335,11 @@ void get_date(){//日期时间获取
   else{
     ++network_station;
   }
-  date_http_client.end();
+  
 }
 
 void get_weather(){//天气数据获取（使用高德
-String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+device_config.city_code+"&key=cf0df3bf85b9361ae9c661ad3af216a8&extensions=all";
+String weather_url="http://restapi.amap.com/v3/weather/weatherInfo?city="+device_config.city_code+"&key=b4e77461d915f4e83dbe973715ec3889&extensions=all";
 WiFiClient wifi_client;
 HTTPClient weather_http_client;
 weather_http_client.setTimeout(500);
@@ -477,7 +410,7 @@ void set_mode(bool mode){//设备模式设定
   {
     if(work_mode)//配置正常工作模式
     {
-      digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开屏幕背光
+      digitalWrite(SCREEN_BACKGROUND_LIGHT,HIGH);//打开屏幕背光
       u8g2.sleepOff();
       tm1637.onMode();
       bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
@@ -493,7 +426,7 @@ void set_mode(bool mode){//设备模式设定
   {
     if(sleep_mode)//配置休眠模式
     {
-      digitalWrite(BACKGRPUND_LIGHT,LOW);//关闭屏幕背光
+      digitalWrite(SCREEN_BACKGROUND_LIGHT,LOW);//关闭屏幕背光
       tm1637.offMode();//关闭数码
       u8g2.sleepOn();//关闭屏幕
       bmp.setSampling(bmp.MODE_SLEEP);
@@ -592,7 +525,88 @@ void compute_data_display(){//电脑数据显示
 }
 
 void notFound(AsyncWebServerRequest *request){
-  request->send_P(200, "text/html", home_page);
+  String home_page =R"rawliteral(
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=0">
+    <title>WIFI_SETTING</title>
+    <style>
+      .div1{
+        position: absolute;
+        top: 30%;
+        left: 50%;
+        transform: translate(-50%,-50%);
+          display: table-cell;
+        /*垂直居中 */
+        vertical-align: middle;
+        /*水平居中*/
+        text-align: center;
+      }
+      .submit_div{
+        background-color: blue;
+        color: white;
+        border-radius: 8px;
+        width: 300px;
+        height: 35px;
+      }
+      .input_div
+      {
+        border: 1px solid #0000FF;
+        border-radius: 20px;
+        width: 300px;
+        height: 35px;
+        font-size: 20px;
+      }
+      .input_div_2
+      {
+        border: 1px solid #0000FF;
+        border-radius: 20px;
+        width: 145px;
+        height: 35px;
+        font-size: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="div1">
+      <h1>信息设置</h1>
+      <form name="wifiset" onsubmit="return validateForm()" action="/setConfig" method="post" target="myframe">
+        <label for="">WiFi信息设置</label>
+        <br />)rawliteral"+wifi_list+
+        R"rawliteral(
+        <br />
+        <input name="wifiPassword" type="password" placeholder="WIFI密码" class="input_div">
+        <br /><br />
+        <label for="">休眠时间设置</label>
+        <br />
+        <input name="startSleepTime" type="text" placeholder="开始休眠时间" class="input_div_2">
+        <input name="endSleepTime" type="text" placeholder="停止休眠时间" class="input_div_2">
+        <br /><br />
+        <label for="">天气设置</label>
+        <br />
+        <input name="cityCode" type="text" placeholder="城市代码(身份证前6位)" class="input_div">
+        <br /><br />
+        <input type='submit' value='确认' class="submit_div">
+      </form>
+        <h3>当前连接WiFi：)rawliteral"+device_config.wifi_name+
+        R"rawliteral(</h3>
+        <h3>当前设备IP：)rawliteral"+WiFi.localIP().toString()+
+        R"rawliteral(</h3>
+        <h3>开始休眠时间：)rawliteral"+device_config.start_sleep_time+
+        R"rawliteral(</h3>
+        <h3>停止休眠时间：)rawliteral"+device_config.end_sleep_time+
+        R"rawliteral(</h3>
+        <h3>当前城市代码：)rawliteral"+device_config.city_code+
+        R"rawliteral(</h3>
+    </div>
+  </body>
+  <script type="text/javascript">
+  </script>
+  )rawliteral";
+
+  request->send(200, "text/html", home_page);
 }
 
 void get_compute_data(AsyncWebServerRequest *request){//电脑数据传输
@@ -723,15 +737,15 @@ uint8_t wifi_connect(String wifi_name,String wifi_password){//连接wifi
   uint8_t disconnected=0;
   while (true)
   {
-    ESP.wdtFeed();//feed watch door dog
-    delay(500);
+    //ESP.wdtFeed();//feed watch door dog
     uint8_t flag=WiFi.status();
-    if(flag!=WL_CONNECTED)++disconnected;
-    else return WL_CONNECTED;
+    if(flag==WL_CONNECTED)return WL_CONNECTED;
+    else ++disconnected;
     if(disconnected>=20)return WL_DISCONNECTED;//10秒后依旧未连接
     u8g2.clearBuffer();
     u8g2.drawStr(0,0,"WIFI CONNECTING.......");
     u8g2.sendBuffer();
+    delay(500);
   }
 }
 
@@ -739,28 +753,21 @@ void wifi_station(){
    if(network_station>=5)
    {
     ip_address="DISCONNECT";
-   }
+      // WiFi.mode(WIFI_STA);
+      // WiFi.setAutoReconnect(true);
+      // WiFi.begin(device_config.wifi_name,device_config.wifi_password);
+      WiFi.reconnect();
+      uint8_t flag=0;
+      while(!WiFi.isConnected())
+      {
+        ++flag;
+        if(flag>20) ESP.restart();
+        delay(500);
+      }
+    }
    else{
     ip_address=WiFi.localIP().toString();//ip地址
    }
-  // if(network_station>=5){//防止WiFi假死
-  //   if (weather_http_client.GET() != HTTP_CODE_OK) { 
-  //     network_station=0;
-  //     WiFi.disconnect();                                
-  //     delay(100);
-  //     if(!WiFi.isConnected())
-  //     {
-  //       WiFi.begin(device_config.wifi_name,device_config.wifi_password);
-  //       uint8_t flag=0;
-  //       while(!WiFi.isConnected())
-  //       {
-  //         flag++;
-  //         delay(500);
-  //         if(flag>20) ESP.restart();
-  //       }
-  //     }
-  //   }
-  // }
 }
 
 void dns_server_start(){//开启dns服务器
@@ -768,7 +775,7 @@ void dns_server_start(){//开启dns服务器
   const byte DNS_PORT = 53;
   DNSServer dnsServer;
   dnsServer.start(DNS_PORT, "*", apIP);
-  digitalWrite(BACKGRPUND_LIGHT,HIGH);//打开背光
+  digitalWrite(SCREEN_BACKGROUND_LIGHT,HIGH);//打开背光
   u8g2.clearBuffer();
   u8g2.drawStr(0,0,"WAIT CONFIGING.......");
   u8g2.sendBuffer();
@@ -807,6 +814,36 @@ CONFIG get_config(String config_str){//解析配置信息返回配置结构体
   result.city_code=city_code;
   return result;
 }
+
+String* scan_wifi()//扫描wifi
+{
+    int wifi_number = WiFi.scanNetworks();
+    if (wifi_number == 0) {
+        return new String{"null"};
+    } else {
+      String* result=new String[wifi_number+1];
+      result[0]=String(wifi_number);
+      for (int i = 0; i < wifi_number; ++i) {
+        result[i+1]=WiFi.SSID(i);
+      } 
+      WiFi.scanDelete();
+      return result;
+    }
+}
+
+String select_scan_wifi(String* wifi_array) 
+{
+  String* wifi_list=wifi_array;
+  uint8_t number=wifi_list[0].toInt();
+  String result="<select name=\"wifiName\" class=\"input_div\">";
+  for(int i=0;i<number;i++)
+  {
+    result+=" <option value =\""+wifi_list[i+1]+"\">"+wifi_list[i+1]+"</option>";
+  }
+  result+="</select>";
+  return result;
+}
+
 
 void ota_init(){
   ArduinoOTA.setHostname("DESKTOP_DATA_STATION_OTA");
