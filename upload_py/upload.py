@@ -31,7 +31,7 @@ if __name__ == "__main__":
     while ip_address=='':
         for i in range(2,255):
             ip="http://192.168.0."+str(i)
-            url=ip+"/ipLocation"
+            url=ip+"/ipAddress"
             try:
                 result = requests.get(url=url,timeout=0.1)
                 if result.text=="success":
