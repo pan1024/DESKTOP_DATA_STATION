@@ -12,8 +12,9 @@
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 #include <ArduinoJson.h>
-#include <little_fs_esp8266/little_fs.h>
+#include <FileSystem/FileSystem.h>
 #include <ArduinoOTA.h>
+#include <LittleFS.h>
 
 #define DHTPIN  5
 #define DHTTYPE DHT11 
@@ -153,7 +154,7 @@ void setup(){
 
     uint8_t flag=wifi_connect(device_config.wifi_name,device_config.wifi_password);//连接wifi
     if(flag!=WL_CONNECTED){//连接失败
-      deleteFile("/wifi_config.txt");
+      deleteFile(LittleFS,"/wifi_config.txt");
       ESP.restart();
     }
     wifi_list=select_scan_wifi(scan_wifi());
@@ -542,6 +543,9 @@ void compute_data_display(){//电脑数据显示
 }
 
 void notFound(AsyncWebServerRequest *request){
+  String weather_api_flag;
+  if(device_config.weather_api_flag.equals("gd"))weather_api_flag="高德";
+  else if(device_config.weather_api_flag.equals("xz"))weather_api_flag="心知";
   String home_page =R"rawliteral(
   <!DOCTYPE html>
   <html>
@@ -552,7 +556,7 @@ void notFound(AsyncWebServerRequest *request){
     <style>
       .div1{
         position: absolute;
-        top: 40%;
+        top: 50%;
         left: 50%;
         transform: translate(-50%,-50%);
           display: table-cell;
@@ -623,6 +627,8 @@ void notFound(AsyncWebServerRequest *request){
         <h3>开始休眠时间：)rawliteral"+device_config.start_sleep_time+
         R"rawliteral(</h3>
         <h3>停止休眠时间：)rawliteral"+device_config.end_sleep_time+
+        R"rawliteral(</h3>
+        <h3>当前使用：)rawliteral"+weather_api_flag+
         R"rawliteral(</h3>
         <h3>当前城市代码：)rawliteral"+device_config.city_code+
         R"rawliteral(</h3>
@@ -720,30 +726,17 @@ void set_config(AsyncWebServerRequest *request){//配置信息网页
       else if(param_name.equals("weatherKeyXz"))weather_key_xz_str=param_value;
     }
   
-    CONFIG before_config=get_config(read_config_txt("wifi_config"),read_config_txt("other_config"));//之前的配置
-
-    CONFIG new_config;
-    if(wifi_name_str.equals(""))new_config.wifi_name=before_config.wifi_name;
-    else new_config.wifi_name=wifi_name_str;
-    if(wifi_password_str.equals(""))new_config.wifi_password=before_config.wifi_password;
-    else new_config.wifi_password=wifi_password_str;
-    if(start_sleep_time_str.equals(""))new_config.start_sleep_time=before_config.start_sleep_time;
-    else new_config.start_sleep_time=start_sleep_time_str.toInt();
-    if(end_sleep_time_str.equals(""))new_config.end_sleep_time=before_config.end_sleep_time;
-    else new_config.end_sleep_time=end_sleep_time_str.toInt();
-    if(city_code_str.equals(""))new_config.city_code=before_config.city_code;
-    else new_config.city_code=city_code_str;
-
-    if(weather_api_flag_str.equals(""))new_config.weather_api_flag=before_config.weather_api_flag;
-    else new_config.weather_api_flag=weather_api_flag_str;
-
-    if(weather_key_gd_str.equals(""))new_config.weather_key_gd=before_config.weather_key_gd;
-    else new_config.weather_key_gd=weather_key_gd_str;
-
-    if(weather_key_xz_str.equals(""))new_config.weather_key_xz=before_config.weather_key_xz;
-    else new_config.weather_key_xz=weather_key_xz_str;
+    CONFIG config=get_config(read_config_txt("wifi_config"),read_config_txt("other_config"));//之前的配置
     
-    write_config_txt(new_config);//wifi连接成功,写入配置文件
+    if(!wifi_name_str.equals(""))config.wifi_name=wifi_name_str;
+    if(!wifi_password_str.equals(""))config.wifi_password=wifi_password_str;
+    if(!start_sleep_time_str.equals(""))config.start_sleep_time=start_sleep_time_str.toInt();
+    if(!end_sleep_time_str.equals(""))config.end_sleep_time=end_sleep_time_str.toInt();
+    if(!city_code_str.equals(""))config.city_code=city_code_str;
+    if(!weather_api_flag_str.equals(""))config.weather_api_flag=weather_api_flag_str;
+    if(!weather_key_gd_str.equals(""))config.weather_key_gd=weather_key_gd_str;
+    if(!weather_key_xz_str.equals(""))config.weather_key_xz=weather_key_xz_str;
+    write_config_txt(config);//wifi连接成功,写入配置文件
     request->send(200, "text/plain", "success!");
     ESP.restart();//重启esp
   } 
@@ -829,7 +822,7 @@ void write_config_txt(CONFIG config){ //写入配置信息到config.txt
   wifi_doc["wifi_password"]= config.wifi_password;
   String wifi_data;
   serializeJson(wifi_doc, wifi_data);
-  writeFile("/wifi_config.txt", wifi_data.c_str());//创建一个新的文件并写入
+  writeFile(LittleFS,"/wifi_config.txt", wifi_data.c_str());//创建一个新的文件并写入
 
   DynamicJsonDocument other_doc(1024);
   other_doc["start_sleep_time"]=config.start_sleep_time;
@@ -840,12 +833,12 @@ void write_config_txt(CONFIG config){ //写入配置信息到config.txt
   other_doc["weather_key_xz"]=config.weather_key_xz;
   String other_data;
   serializeJson(other_doc, other_data);
-  writeFile("/other_config.txt", other_data.c_str());//创建一个新的文件并写入
+  writeFile(LittleFS,"/other_config.txt", other_data.c_str());//创建一个新的文件并写入
 }
 
 String read_config_txt(String file_name){//读取配置信息
   String real_name="/"+file_name+".txt";
-    return readFile(real_name.c_str());
+    return readFile(LittleFS,real_name.c_str());
 }
 
 CONFIG get_config(String wifi_config_str,String other_config_str){//解析配置信息返回配置结构体
@@ -895,7 +888,6 @@ String select_scan_wifi(String* wifi_array)
   result+="</select>";
   return result;
 }
-
 
 void ota_init(){
   ArduinoOTA.setHostname("DESKTOP_DATA_STATION_OTA");
