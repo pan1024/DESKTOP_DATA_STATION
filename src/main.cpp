@@ -128,7 +128,7 @@ String read_config_txt(String file_name);
 CONFIG get_config(String wifi_config_str,String other_config_str);
 void notFound(AsyncWebServerRequest *request);
 void get_compute_data(AsyncWebServerRequest *request);
-void set_config(AsyncWebServerRequest *request);
+void set_config(AsyncWebServerRequest *request);                                             
 void ota_init();
 void wifi_station();
 String* scan_wifi();
@@ -137,11 +137,16 @@ String select_scan_wifi(String* wifi_array);
 uint8_t network_station=0;//网络状态
 
 void setup(){
-  digitalWrite(SCREEN_BACKGROUND_LIGHT,HIGH);
+  
   
   device_init();
+  
+  digitalWrite(SCREEN_BACKGROUND_LIGHT,HIGH);
 
   String wifi_config_str=read_config_txt("wifi_config");
+  String other_config_str=read_config_txt("other_config");
+  device_config=get_config(wifi_config_str,other_config_str);//获取配置信息
+ 
   if(String("nullptr").equals(wifi_config_str)){//配置文件不存在时会返回nullptr
     create_ap();//开启热点
     wifi_list=select_scan_wifi(scan_wifi());
@@ -149,9 +154,7 @@ void setup(){
     dns_server_start();//开启dns服务器
   }
   else{//读取到配置文件
-    String other_config_str=read_config_txt("other_config");
-    device_config=get_config(wifi_config_str,other_config_str);//获取配置信息
-
+     
     uint8_t flag=wifi_connect(device_config.wifi_name,device_config.wifi_password);//连接wifi
     if(flag!=WL_CONNECTED){//连接失败
       deleteFile(LittleFS,"/wifi_config.txt");
@@ -257,7 +260,7 @@ void u8g2_prepare(){//屏幕初始化
   u8g2.setDrawColor(1);
   u8g2.setFontPosTop();
   u8g2.setFontDirection(0);
-  //u8g2.setContrast(40);
+  u8g2.setContrast(60);
 }
 
 void device_init(){
@@ -266,7 +269,7 @@ void device_init(){
   dht.begin();
   bmp.begin();
   bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
-                  Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
+                  Adafruit_BMP280::SAMPLING_X16,     /* Temp. oversampling */
                   Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
                   Adafruit_BMP280::FILTER_X16,      /* Filtering. */
                   Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
@@ -275,7 +278,6 @@ void device_init(){
   tm1637.setBrightness(5);
   u8g2.begin();
   u8g2_prepare();
-  
   LittleFS.begin();
   
 }
@@ -387,7 +389,7 @@ void get_weather_xz(){//天气数据获取（使用心知
     // 使用find跳过HTTP响应头
     String weather_data;
     if (weather_client.find("\r\n\r\n")) weather_data = weather_client.readStringUntil('\n');
-    weather_client.stop(); 
+    weather_client.stop(); //stop this request
      //利用ArduinoJson库解析心知天气响应信息
     weather[0]=weather_data_parse(weather_data,0,false);     
     weather[1]=weather_data_parse(weather_data,1,false);
@@ -752,18 +754,13 @@ void sever_start(){//开启服务器
 
 void create_ap(){//创建热点
   IPAddress apIP(8,8,4,4);
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP("DESKTOP_DATA_STATION");
+  WiFi.softAP("DESKTOP_CLOCK");
 } 
 
 uint8_t wifi_connect(String wifi_name,String wifi_password){//连接wifi
   //静态iP信息
-  // IPAddress staticIP(192, 168, 0, 253);
-  // IPAddress gateway(192, 168, 0, 1);
-  // IPAddress subnet(255, 255, 255, 0);
-  // IPAddress dns(192, 168, 0,1);
-
   WiFi.mode(WIFI_STA);
   //WiFi.config(staticIP, gateway, subnet, dns, dns);
   WiFi.setAutoReconnect(true);
@@ -811,7 +808,9 @@ void dns_server_start(){//开启dns服务器
   dnsServer.start(DNS_PORT, "*", apIP);
   digitalWrite(SCREEN_BACKGROUND_LIGHT,HIGH);//打开背光
   u8g2.clearBuffer();
-  u8g2.drawStr(0,0,"WAIT CONFIGING.......");
+  u8g2.drawStr(0,0,"Wait for configuration");
+  u8g2.drawStr(0,20,"Connect to the ap:");
+  u8g2.drawStr(0,30,"DESKTOP_CLOCK");
   u8g2.sendBuffer();
   while (true) dnsServer.processNextRequest();
 }
